@@ -1,7 +1,7 @@
 // Pure logic, run with `claude plugin test .`: synthetic figures only.
 import { expect, test } from 'claude-code/testing'
 
-import { cacheStatus, cardOf, cardText, clockTime, countdown, span, tokens } from './card'
+import { cacheStatus, cardOf, cardText, clockTime, minutes, span, tokens } from './card'
 import type { Card } from './card'
 
 test('token counts use k and M with one decimal, dropping a trailing .0', () => {
@@ -200,35 +200,42 @@ const CACHE = {
 }
 const WITH_CACHE = { ...WITH_TOKENS, cache: CACHE, ttl: HOUR, now: 18 * MIN + 50_000 }
 
-test('countdowns in mm:ss or h:mm:ss, rounded up; pauses in s, m or h with minutes', () => {
-  expect(countdown(41 * MIN + 10_000)).toBe('41:10')
-  expect(countdown(41 * MIN + 9_001)).toBe('41:10')
-  expect(countdown(HOUR)).toBe('1:00:00')
-  expect(countdown(30_000)).toBe('00:30')
+test('times left in whole minutes, rounded down; pauses in s, m or h with minutes', () => {
+  expect(minutes(41 * MIN + 59_000)).toBe('41m')
+  expect(minutes(59_999)).toBe('<1m')
+  expect(minutes(HOUR)).toBe('1h00m')
   expect(span(45_000)).toBe('45s')
   expect(span(7 * MIN + 59_000)).toBe('7m')
   expect(span(67 * MIN)).toBe('1h07m')
 })
 
-test('the cache line: active with the time left and the TTL, expired, or no cache yet', () => {
-  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'en')).toBe('active, expires in 41:10 (TTL 1h)')
+test('the cache line: active until the expiry with whole minutes left and the TTL, expired, or no cache yet', () => {
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'en')).toBe(`active until ${clockTime(HOUR)} (in 41m, TTL 1h)`)
+  // The text changes once a minute: the same through the minute, then a minute less.
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 1_000, 'en')).toBe(`active until ${clockTime(HOUR)} (in 41m, TTL 1h)`)
+  expect(cacheStatus(CACHE, HOUR, 19 * MIN, 'en')).toBe(`active until ${clockTime(HOUR)} (in 41m, TTL 1h)`)
+  expect(cacheStatus(CACHE, HOUR, 19 * MIN + 1_000, 'en')).toBe(`active until ${clockTime(HOUR)} (in 40m, TTL 1h)`)
+  expect(cacheStatus(CACHE, HOUR, HOUR - 30_000, 'en')).toBe(`active until ${clockTime(HOUR)} (in <1m, TTL 1h)`)
+  expect(cacheStatus(CACHE, 5 * MIN, 5 * MIN + 30_000, 'en')).toBe('expired <1m ago')
   expect(cacheStatus(CACHE, 5 * MIN, 8 * MIN, 'en')).toBe('expired 3m ago')
+  expect(cacheStatus(CACHE, 5 * MIN, 72 * MIN, 'en')).toBe('expired 1h07m ago')
   expect(cacheStatus({ ...CACHE, last: undefined }, HOUR, 0, 'en')).toBe('no cache yet')
-  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'es')).toBe('activa, expira en 41:10 (TTL 1h)')
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'es')).toBe(`activa hasta las ${clockTime(HOUR)} (en 41m, TTL 1h)`)
+  expect(cacheStatus(CACHE, HOUR, HOUR - 30_000, 'es')).toBe(`activa hasta las ${clockTime(HOUR)} (en <1m, TTL 1h)`)
   expect(cacheStatus(CACHE, 5 * MIN, 8 * MIN, 'es')).toBe('caducada hace 3m')
   expect(cacheStatus({ ...CACHE, last: undefined }, HOUR, 0, 'es')).toBe('sin caché todavía')
 })
 
 test('the cache rows after the table: the status, then the losses newest first, each cause said', () => {
   expect(trimmed(cardOf(WITH_CACHE, 'en', 115)).slice(8)).toEqual([
-    'Cache          active, expires in 41:10 (TTL 1h)',
+    `Cache          active until ${clockTime(HOUR)} (in 41m, TTL 1h)`,
     `Cache losses   ${clockTime(140 * MIN)}  −112k  idle 1h07m > TTL`,
     `               ${clockTime(62 * MIN)}  −98k   /compact`,
     `               ${clockTime(40 * MIN)}  −50k   model changed`,
     `               ${clockTime(10 * MIN)}  −20k   invalidated (prompt or tools changed)`,
   ])
   expect(trimmed(cardOf(WITH_CACHE, 'es', 115)).slice(8)).toEqual([
-    'Caché               activa, expira en 41:10 (TTL 1h)',
+    `Caché               activa hasta las ${clockTime(HOUR)} (en 41m, TTL 1h)`,
     `Pérdidas de caché   ${clockTime(140 * MIN)}  −112k  inactiva 1h07m > TTL`,
     `                    ${clockTime(62 * MIN)}  −98k   /compact`,
     `                    ${clockTime(40 * MIN)}  −50k   cambio de modelo`,
@@ -248,8 +255,8 @@ test('the card shows the 5 newest losses, the text all of them; a short band cut
 
 test('no losses: a sentence; after /clear the marker comes first', () => {
   const none = { ...WITH_CACHE, cache: { ...CACHE, losses: [] } }
-  expect(trimmed(cardOf(none, 'en', 115)).slice(8)).toEqual(['Cache          active, expires in 41:10 (TTL 1h)', 'No cache losses this session'])
-  expect(trimmed(cardOf(none, 'es', 115)).slice(8)).toEqual(['Caché               activa, expira en 41:10 (TTL 1h)', 'Sin pérdidas de caché en esta sesión'])
+  expect(trimmed(cardOf(none, 'en', 115)).slice(8)).toEqual([`Cache          active until ${clockTime(HOUR)} (in 41m, TTL 1h)`, 'No cache losses this session'])
+  expect(trimmed(cardOf(none, 'es', 115)).slice(8)).toEqual([`Caché               activa hasta las ${clockTime(HOUR)} (en 41m, TTL 1h)`, 'Sin pérdidas de caché en esta sesión'])
   const afterClear = { ...WITH_CACHE, cache: { ...CACHE, clearedAt: 5 * MIN } }
   expect(trimmed(cardOf(afterClear, 'en', 115)).slice(9, 11)).toEqual([
     `Cache losses   Cleared at ${clockTime(5 * MIN)}`,

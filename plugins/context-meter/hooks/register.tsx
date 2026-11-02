@@ -20,7 +20,6 @@ const cache = atom({ plugin: 'context-meter', key: 'cache' } as const, NO_CACHE)
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 
 const SYNC_MS = 2000
-const TICK_MS = 1000
 const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
@@ -34,7 +33,6 @@ const SCOPE = 'context-meter'
 // compaction and /clear, so a count that began before one is stale), the stretch last estimated,
 // and the hint line's width as last drawn on the terminal.
 let timer: Timer | undefined
-let ticker: Timer | undefined
 let ttlSetting: TtlSetting = 'auto'
 let drawnStatus = ''
 let isCounting = false
@@ -164,9 +162,9 @@ async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
 }
 
 /**
- * The countdown's tick: the cache line is worked out every second and the time written only when the
- * line changes (each second while the cache is active, each minute once it expired, never without a
- * cache), so the card redraws no more than its text does and no hook runs on hover.
+ * The countdown's tick, on the 2 s resync: the cache line is worked out and the time written only when
+ * the line changes (at most once a minute), so the band redraws no more than its text does; no hook
+ * runs on hover, so the card cannot know whether it is shown.
  */
 async function tick ($: EngineInterface) {
   const [cached, now] = await Promise.all([read($, cache), $.clock.now()])
@@ -182,15 +180,13 @@ function startTimer ($: EngineInterface) {
     const usage = await $.session.usage()
     await showCost($, usage.cost)
     await sync($, usage.context, true)
+    await tick($)
   })
-  ticker ??= $.clock.every(TICK_MS, () => tick($))
 }
 
 function stopTimers () {
   timer?.cancel()
   timer = undefined
-  ticker?.cancel()
-  ticker = undefined
 }
 
 export const register: Register = (on, options) => {

@@ -41,7 +41,7 @@ type Words = {
   losses: string
   noLosses: string
   clearedAt: string
-  active: (left: string, ttl: string) => string
+  active: (until: string, left: string, ttl: string) => string
   expired: (ago: string) => string
   noCache: string
   causes: Record<Exclude<Loss['cause'], 'expired'>, string> & { expired: (gap: string) => string }
@@ -64,7 +64,7 @@ const WORDS: Record<Language, Words> = {
     losses: 'Cache losses',
     noLosses: 'No cache losses this session',
     clearedAt: 'Cleared at',
-    active: (left, ttl) => `active, expires in ${left} (TTL ${ttl})`,
+    active: (until, left, ttl) => `active until ${until} (in ${left}, TTL ${ttl})`,
     expired: ago => `expired ${ago} ago`,
     noCache: 'no cache yet',
     causes: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap} > TTL`, invalidated: 'invalidated (prompt or tools changed)' },
@@ -85,7 +85,7 @@ const WORDS: Record<Language, Words> = {
     losses: 'Pérdidas de caché',
     noLosses: 'Sin pérdidas de caché en esta sesión',
     clearedAt: 'Borrada a las',
-    active: (left, ttl) => `activa, expira en ${left} (TTL ${ttl})`,
+    active: (until, left, ttl) => `activa hasta las ${until} (en ${left}, TTL ${ttl})`,
     expired: ago => `caducada hace ${ago}`,
     noCache: 'sin caché todavía',
     causes: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap} > TTL`, invalidated: 'invalidada (cambió el prompt o las herramientas)' },
@@ -172,14 +172,6 @@ function tableRows (last: Counts, total: Counts, words: Words, columns: Column[]
   ]
 }
 
-/** `41:10`, or `1:00:00` from an hour: what is left, rounded up to the second. */
-export function countdown (ms: number): string {
-  const s = Math.ceil(ms / 1000)
-  const h = Math.floor(s / 3600)
-  const mmss = `${pad2(Math.floor((s % 3600) / 60))}:${pad2(s % 60)}`
-  return h > 0 ? `${h}:${mmss}` : mmss
-}
-
 /** `45s`, `7m`, `1h07m`: a pause or how long ago, rounded down. */
 export function span (ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -194,14 +186,22 @@ export function clockTime (at: number): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
 }
 
+/** `<1m`, `41m`, `1h07m`: whole minutes, rounded down, so the text changes once a minute. */
+export function minutes (ms: number): string {
+  return ms < 60_000 ? '<1m' : span(ms)
+}
+
 const ttlLabel = (ttl: number) => (ttl >= HOUR ? `${ttl / HOUR}h` : `${ttl / 60_000}m`)
 
-/** The cache line: active with the time left and the TTL, expired and how long ago, or no cache yet. */
+/**
+ * The cache line: active until the expiry time, with the whole minutes left and the TTL; expired and
+ * how many minutes ago; or no cache yet. It changes at most once a minute.
+ */
 export function cacheStatus (cache: Cache, ttl: number, now: number, language: Language): string {
   const words = WORDS[language]
   const status = statusOf(cache, ttl, now)
-  if (status.kind === 'active') return words.active(countdown(status.left), ttlLabel(ttl))
-  if (status.kind === 'expired') return words.expired(span(status.ago))
+  if (status.kind === 'active') return words.active(clockTime(cache.last!.at + ttl), minutes(status.left), ttlLabel(ttl))
+  if (status.kind === 'expired') return words.expired(minutes(status.ago))
   return words.noCache
 }
 

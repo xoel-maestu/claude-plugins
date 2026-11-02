@@ -556,7 +556,7 @@ test('the band card at 120 columns: the table in full, the cache rows after it',
     ' Session        2.3M    2.1M         160k          31k        88k',
     ' Cache hit      92% of input read from cache',
     ' Cost           $4.12 (session, all agents)',
-    ' Cache          active, expires in 05:00 (TTL 5m)',
+    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`,
     ' No cache losses this session',
   ])
 })
@@ -573,7 +573,7 @@ test('the band card at 60 columns: Uncached and Cache write left out, none wrapp
     ' Session        2.3M    2.1M         88k',
     ' Cache hit      92% of input read from cache',
     ' Cost           $4.12 (session, all agents)',
-    ' Cache          active, expires in 05:00 (TTL 5m)',
+    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`,
     ' No cache losses this session',
   ])
 })
@@ -587,12 +587,13 @@ test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on)
     ' Sesión              2.3M      2.1M          160k            31k         88k',
     ' Acierto de caché    92% de la entrada leída de caché',
     ' Coste               $4.12 (sesión, todos los agentes)',
-    ' Caché               activa, expira en 05:00 (TTL 5m)',
+    ` Caché               activa hasta las ${clockTime(5 * MIN)} (en 5m, TTL 5m)`,
     ' Sin pérdidas de caché en esta sesión',
   ])
 })
 
 const MIN = 60_000
+const HOUR = 60 * MIN
 
 test('a loss per cause: a compaction, another model, a pause past the TTL, else invalidated', async ($, on) => {
   const w = world(on, fill(62))
@@ -614,7 +615,7 @@ test('a loss per cause: a compaction, another model, a pause past the TTL, else 
   await respond($, w, counts(5, 0, 60_000, 10, 'model-b'))
   const at = (minutes: number) => clockTime(minutes * MIN)
   expect(await cacheLines($)).toEqual([
-    'Cache          active, expires in 05:00 (TTL 5m)',
+    `Cache          active until ${clockTime(70 * MIN + 5 * MIN)} (in 5m, TTL 5m)`,
     `Cache losses   ${at(70)}  −70k   idle 1h07m > TTL`,
     `               ${at(3)}  −80k   model changed`,
     `               ${at(2)}  −90k   /compact`,
@@ -622,18 +623,37 @@ test('a loss per cause: a compaction, another model, a pause past the TTL, else 
   ])
 })
 
-test('the countdown runs down each second and turns to expired', async ($, on) => {
+/** How many times the plugin wrote the countdown's time to $.state. */
+const countWrites = (on: On) => {
+  const writes = { now: 0, cache: 0 }
+  on('state.set', ($, e, next) => {
+    const key = (e as { key: string }).key
+    if (key === 'now' || key === 'cache') writes[key] += 1
+    return next(e)
+  })
+  return writes
+}
+
+test('the countdown is drawn once a minute, never each second', async ($, on) => {
+  const writes = countWrites(on)
   const w = world(on, fill(62))
   w.live.rateLimits = [{ window: 'five_hour' }] as never
   await startSession($)
   await measure($, 62)
   await respond($, w, counts(5, 0, 50_000, 10))
   const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
-  // A subscription: 1h, drawn again each second.
-  await w.clock.advance(1000)
-  expect(await status()).toBe(' Cache          active, expires in 59:59 (TTL 1h)')
-  await w.clock.advance(1000)
-  expect(await status()).toBe(' Cache          active, expires in 59:58 (TTL 1h)')
+  // A subscription: 1h, the line the same through each minute.
+  await w.clock.advance(2000)
+  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h)`)
+  const before = writes.now
+  await w.clock.advance(50_000)
+  expect(writes.now).toBe(before)
+  await w.clock.advance(10_000)
+  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 58m, TTL 1h)`)
+  expect(writes.now).toBe(before + 1)
+  // Ten minutes: ten writes, not three hundred.
+  await w.clock.advance(10 * MIN)
+  expect(writes.now).toBe(before + 11)
 })
 
 test('without rate limits the cache lives 5m and then reads as expired', async ($, on) => {
@@ -643,8 +663,10 @@ test('without rate limits the cache lives 5m and then reads as expired', async (
   await respond($, w, counts(5, 0, 50_000, 10))
   const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
   await w.clock.advance(4 * MIN + 30_000)
-  expect(await status()).toBe(' Cache          active, expires in 00:30 (TTL 5m)')
-  await w.clock.advance(MIN + 40_000)
+  expect(await status()).toBe(` Cache          active until ${clockTime(5 * MIN)} (in <1m, TTL 5m)`)
+  await w.clock.advance(40_000)
+  expect(await status()).toBe(' Cache          expired <1m ago')
+  await w.clock.advance(MIN)
   expect(await status()).toBe(' Cache          expired 1m ago')
 })
 
@@ -653,17 +675,17 @@ test('cacheTtl 5m stands on a subscription', { options: { cacheTtl: '5m' } }, as
   w.live.rateLimits = [{ window: 'five_hour' }] as never
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
-  expect((await cacheLines($))[0]).toBe('Cache          active, expires in 05:00 (TTL 5m)')
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`)
   await w.clock.advance(6 * MIN)
   await respond($, w, counts(5, 0, 50_000, 10))
   expect((await cacheLines($))[1]).toMatch(/idle 6m > TTL$/)
 })
 
-test('cacheTtl 1h: no expiry within the hour, counted in h:mm:ss', { options: { cacheTtl: '1h' } }, async ($, on) => {
+test('cacheTtl 1h: no expiry within the hour, the time left in h and minutes', { options: { cacheTtl: '1h' } }, async ($, on) => {
   const w = world(on, fill(62))
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
-  expect((await cacheLines($))[0]).toBe('Cache          active, expires in 1:00:00 (TTL 1h)')
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h)`)
   await w.clock.advance(30 * MIN)
   await respond($, w, counts(5, 0, 50_000, 10))
   expect((await cacheLines($))[1]).toMatch(/invalidated/)
@@ -675,7 +697,7 @@ test('auto TTL switches to 1h after a hit past a 5 minute pause', async ($, on) 
   await respond($, w, counts(5, 0, 50_000, 10))
   await w.clock.advance(6 * MIN)
   await respond($, w, counts(5, 50_000, 1000, 10))
-  expect(await cacheLines($)).toEqual(['Cache          active, expires in 1:00:00 (TTL 1h)', 'No cache losses this session'])
+  expect(await cacheLines($)).toEqual([`Cache          active until ${clockTime(6 * MIN + HOUR)} (in 1h00m, TTL 1h)`, 'No cache losses this session'])
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {
@@ -721,7 +743,7 @@ test('the cache rows in Spanish', { options: { language: 'es' } }, async ($, on)
   await w.clock.advance(10 * MIN)
   await respond($, w, counts(5, 0, 40_000, 10))
   expect(await cacheLines($)).toEqual([
-    'Caché               activa, expira en 05:00 (TTL 5m)',
+    `Caché               activa hasta las ${clockTime(15 * MIN)} (en 5m, TTL 5m)`,
     `Pérdidas de caché   ${clockTime(10 * MIN)}  −50k  inactiva 10m > TTL`,
   ])
 })
@@ -740,7 +762,7 @@ test('a reload keeps the cache and its losses in $.state', async ($, on) => {
   world(on, fill(62))
   await startSession($)
   expect(await cacheLines($)).toEqual([
-    'Cache          active, expires in 1:00:00 (TTL 1h)',
+    `Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h)`,
     `Cache losses   ${clockTime(0)}  −112k  idle 1h07m > TTL`,
   ])
 })
