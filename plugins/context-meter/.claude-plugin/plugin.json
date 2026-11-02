@@ -1,0 +1,39 @@
+{
+  "name": "context-meter",
+  "version": "0.1.0",
+  "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
+  "author": {
+    "name": "Xoel García Maestu",
+    "url": "https://github.com/xoel-maestu"
+  },
+  "homepage": "https://github.com/xoel-maestu/claude-plugins",
+  "repository": "https://github.com/xoel-maestu/claude-plugins",
+  "license": "MIT",
+  "keywords": ["context", "tokens", "compact", "status", "mod"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "warnAt": {
+      "type": "number",
+      "title": "Warning from",
+      "description": "Context percentage from which the meter uses the warning color.",
+      "default": 50,
+      "min": 1,
+      "max": 100
+    },
+    "dangerAt": {
+      "type": "number",
+      "title": "Danger from",
+      "description": "Context percentage from which the meter uses the error color.",
+      "default": 75,
+      "min": 1,
+      "max": 100
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the card and the /context-meter output: en (English) or es (Spanish).",
+      "options": ["en", "es"],
+      "default": "en"
+    }
+  }
+}
