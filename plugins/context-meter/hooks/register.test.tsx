@@ -1,7 +1,7 @@
 // Mod tests, run against the engine itself: `claude plugin test .`. Every figure is synthetic.
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, SessionContextUsage, SessionMessage } from 'claude-code'
+import type { On, SessionContextUsage, SessionMessage, TurnUsage } from 'claude-code'
 
 const WINDOW = 200_000
 
@@ -18,7 +18,17 @@ type Breakdown = { percentage: number; totalTokens: number; threshold?: number; 
  * when set, keeps a count waiting until it resolves; `onCount` hears a count begin.
  */
 function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakdown = null) {
-  const live = { context, breakdown, counts: 0, hold: undefined as Promise<void> | undefined, onCount: () => {} }
+  const live = {
+    context,
+    breakdown,
+    counts: 0,
+    hold: undefined as Promise<void> | undefined,
+    onCount: () => {},
+    // The session start and cost the usage call reports, and the counts the next model response carries.
+    startedAt: 0,
+    cost: undefined as { usd: number } | undefined,
+    usage: null as TurnUsage | null,
+  }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 'test-session' }) as never)
@@ -26,7 +36,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   on('config.set', ($, e) => ({ value: e.value }))
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
   on('session.usage', async ($, e) => {
-    if (e.breakdown === undefined) return { value: { startedAt: 0, context: live.context, rateLimits: [] } }
+    if (e.breakdown === undefined) return { value: { startedAt: live.startedAt, context: live.context, rateLimits: [], cost: live.cost } }
     live.counts += 1
     live.onCount()
     const b = live.breakdown
@@ -38,7 +48,11 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
       isAutoCompactEnabled: b.threshold !== undefined,
       autoCompactThreshold: b.threshold,
     }
-    return { value: { startedAt: 0, context: { ...live.context, breakdown: counted }, rateLimits: [] } as never }
+    return { value: { startedAt: live.startedAt, context: { ...live.context, breakdown: counted }, rateLimits: [], cost: live.cost } as never }
+  })
+  // The model's response to a request: no text, the counts in live.usage.
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: live.usage }
   })
   on('session.measure', ($, e) => ({ changed: e.changed }))
   // The engine's own node: a keyed Box when it has mode labels, its bare node otherwise.
@@ -396,4 +410,135 @@ test("keeps the engine's mode labels after the meter", async ($, on) => {
   const drawn = (await ui.drawn()) as { children?: unknown[] }
   expect(drawn.children?.at(-1)).toMatchObject({ props: { key: 'engine' } })
   expect(await row(ui)).toEqual(['ctx ', '━━━━', '── ', '62%', ' · '])
+})
+
+const counts = (input: number, cacheRead: number, cacheWrite: number, output: number): TurnUsage =>
+  ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, model: 'model-a' })
+
+/** One model request, the main thread's or, with `agentId`, another loop's: its stream read to the end. */
+async function respond ($: Engine, w: ReturnType<typeof world>, usage: TurnUsage | null, agentId?: string) {
+  w.live.usage = usage
+  const stream = $.turn.step({ turnId: 'turn-1', index: 0, model: 'model-a', messageCount: 2, ...(agentId === undefined ? {} : { agentId }) })
+  // Read to the end: the chunks (none here), then the result as the generator's return value.
+  let read = await stream.next()
+  while (read.done !== true) read = await stream.next()
+  return read.value
+}
+const tokenLines = async ($: Engine) => ((await runCommand($)).text ?? '').split('\n').slice(2)
+
+test('each main-thread response is the last request and adds to the session', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.cost = { usd: 0.5 }
+  await startSession($)
+  await respond($, w, counts(1000, 100_000, 4000, 2000))
+  w.live.cost = { usd: 0.8 }
+  const result = await respond($, w, counts(200, 104_000, 1000, 500))
+  // The response goes on as it came.
+  expect(result).toMatchObject({ stopReason: 'end_turn', usage: { input_tokens: 200 } })
+  expect(await tokenLines($)).toEqual([
+    'Last request   in 200    cache read 104k   cache write 1k   out 500',
+    'Session        in 1.2k   cache read 204k   cache write 5k   out 2.5k   $0.80',
+    'Cache hit      97%',
+  ])
+})
+
+test("another loop's response (a subagent, a fork of the engine) changes nothing", async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(1000, 100_000, 4000, 2000))
+  const before = await tokenLines($)
+  await respond($, w, counts(9000, 9000, 9000, 9000), 'agent-1')
+  expect(await tokenLines($)).toEqual(before)
+  expect(before[0]).toBe('Last request   in 1k   cache read 100k   cache write 4k   out 2k')
+})
+
+test('a response without usage counts nothing; before any response there are no token rows', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, null)
+  expect((await runCommand($)).text).toBe('Context   124k / 200k   62%\n' + '━'.repeat(22) + '─'.repeat(14))
+  // No cost row of its own either, without a request.
+  w.live.cost = { usd: 1 }
+  expect((await runCommand($)).text?.includes('$')).toBe(false)
+})
+
+test('/clear empties the ledger, and a new session start is counted from zero', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(1000, 100_000, 4000, 2000))
+  await $.session.end({ reason: 'clear' } as never)
+  await measure($, 62)
+  expect(await tokenLines($)).toEqual([])
+  await respond($, w, counts(1000, 100_000, 4000, 2000))
+  // The engine moves the start with /clear: what came before it is not added.
+  w.live.startedAt = 60_000
+  await respond($, w, counts(10, 20, 30, 40))
+  expect((await tokenLines($))[1]).toBe('Session        in 10   cache read 20   cache write 30   out 40')
+})
+
+test('a reload keeps the counts in $.state', async ($, on) => {
+  // What the plugin wrote before the reload, for this session's start.
+  on('state.get', ($, e, next) => (e as { key: string }).key === 'ledger'
+    ? { value: { value: {
+        startedAt: 0,
+        last: { input: 1200, cacheRead: 118_000, cacheWrite: 5100, output: 2400, model: 'model-a', at: 1 },
+        total: { input: 31_000, cacheRead: 2_100_000, cacheWrite: 160_000, output: 88_000 },
+        requests: 14,
+      }, version: 3 } }
+    : next(e))
+  world(on, fill(62))
+  await startSession($)
+  expect(await tokenLines($)).toEqual([
+    'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
+    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
+    'Cache hit      92%',
+  ])
+})
+
+const withRequests = async ($: Engine, on: On) => {
+  const w = world(on, fill(62))
+  w.live.cost = { usd: 4.12 }
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(1200, 118_000, 5100, 2400))
+  w.live.usage = counts(29_800, 1_982_000, 154_900, 85_600)
+  await respond($, w, w.live.usage)
+}
+
+test('the band card at 120 columns: the token rows in full, the card as wide as they need', async ($, on) => {
+  await withRequests($, on)
+  const { box, rows } = await cardIn(await band($, 115))
+  expect(box?.props).toMatchObject({ width: 86, height: 7 })
+  expect(rows.map(row => row.trimEnd())).toEqual([
+    ' Context   124k / 200k   62%',
+    ' ' + '━'.repeat(51) + '─'.repeat(31),
+    ' Last request   in 29.8k   cache read 2M     cache write 154.9k   out 85.6k',
+    ' Session        in 31k     cache read 2.1M   cache write 160k     out 88k     $4.12',
+    ' Cache hit      92%',
+  ])
+})
+
+test('the band card at 60 columns: each token row in two lines, none wrapping', async ($, on) => {
+  await withRequests($, on)
+  const { box, rows } = await cardIn(await band($, 55))
+  const width = box?.props?.width as number
+  expect(width).toBeLessThanOrEqual(55)
+  expect(rows.every(row => row.length === width - 2)).toBe(true)
+  expect(rows.slice(2).map(row => row.trimEnd())).toEqual([
+    ' Last request   in 29.8k   out 85.6k',
+    '                cache read 2M     cache write 154.9k',
+    ' Session        in 31k     out 88k     $4.12',
+    '                cache read 2.1M   cache write 160k',
+    ' Cache hit      92%',
+  ])
+})
+
+test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  await withRequests($, on)
+  const { rows } = await cardIn(await band($, 115))
+  expect(rows.slice(2).map(row => row.trim())).toEqual([
+    'Última petición    entrada 29.8k   caché leída 2M     caché escrita 154.9k   salida 85.6k',
+    'Sesión             entrada 31k     caché leída 2.1M   caché escrita 160k     salida 88k     $4.12',
+    'Acierto de caché   92%',
+  ])
 })
