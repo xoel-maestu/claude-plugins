@@ -12,14 +12,14 @@
       "name": "context-meter",
       "source": "./plugins/context-meter",
       "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "category": "productivity"
     },
     {
       "name": "sub-meter",
       "source": "./plugins/sub-meter",
       "description": "Subscription usage at the bottom right of the prompt: the 5-hour and weekly windows, a hover card with reset times and pace, and /sub-meter.",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "category": "productivity"
     }
   ]

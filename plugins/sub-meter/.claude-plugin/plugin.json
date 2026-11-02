@@ -1,6 +1,6 @@
 {
   "name": "sub-meter",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Subscription usage at the bottom right of the prompt: the 5-hour and weekly windows, a hover card with reset times and pace, and /sub-meter.",
   "author": {
     "name": "Xoel García Maestu",
