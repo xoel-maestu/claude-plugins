@@ -45,6 +45,9 @@ type Words = {
   expired: (ago: string) => string
   noCache: string
   causes: Record<Exclude<Loss['cause'], 'expired'>, string> & { expired: (gap: string) => string }
+  /** Where the full form does not fit: the expiry and the TTL, and each cause in a word or two. */
+  activeShort: (until: string, ttl: string) => string
+  causesShort: Record<Exclude<Loss['cause'], 'expired'>, string> & { expired: (gap: string) => string }
 }
 
 const WORDS: Record<Language, Words> = {
@@ -68,6 +71,8 @@ const WORDS: Record<Language, Words> = {
     expired: ago => `expired ${ago} ago`,
     noCache: 'no cache yet',
     causes: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap} > TTL`, invalidated: 'invalidated (prompt or tools changed)' },
+    activeShort: (until, ttl) => `until ${until} (TTL ${ttl})`,
+    causesShort: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap}`, invalidated: 'invalidated' },
   },
   es: {
     context: 'Contexto',
@@ -89,6 +94,8 @@ const WORDS: Record<Language, Words> = {
     expired: ago => `caducada hace ${ago}`,
     noCache: 'sin caché todavía',
     causes: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap} > TTL`, invalidated: 'invalidada (cambió el prompt o las herramientas)' },
+    activeShort: (until, ttl) => `hasta las ${until} (TTL ${ttl})`,
+    causesShort: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap}`, invalidated: 'invalidada' },
   },
 }
 
@@ -106,6 +113,17 @@ export type Tone = 'meter' | 'plain' | 'dim'
 export type Cell = { text: string; tone: Tone }
 /** One row of the card: its pieces, left to right, together exactly as wide as the content. */
 export type Row = Cell[]
+/** A row while the card is laid out: its last cell may carry a shorter form for a narrow band. */
+type Draft = (Cell & { short?: string })[]
+
+/** The row as it fits `width`: whole, else with its last cell's short form, else without that cell. */
+function shorten (row: Draft, width: number): Row {
+  if (widthOfRow(row) <= width) return row
+  const tail = row.at(-1)
+  if (tail?.short === undefined) return row
+  const short = [...row.slice(0, -1), { text: tail.short, tone: tail.tone }]
+  return widthOfRow(short) <= width ? short : row.slice(0, -1)
+}
 
 /**
  * The hover card: its rows inside a rounded border, the width border included, the content width
@@ -209,9 +227,11 @@ export function cacheStatus (cache: Cache, ttl: number, now: number, language: L
  * The cache rows: its status, then the losses, newest first (at most `maxLosses`), after the /clear
  * marker when there is one; with no loss, a sentence saying so.
  */
-function cacheRows (cache: Cache, ttl: number, now: number, words: Words, language: Language, labelWidth: number, maxLosses: number): Row[] {
+function cacheRows (cache: Cache, ttl: number, now: number, words: Words, language: Language, labelWidth: number, maxLosses: number): Draft[] {
   const label = (text: string): Cell => ({ text: text.padEnd(labelWidth), tone: 'plain' })
-  const rows: Row[] = [[label(words.cache), { text: cacheStatus(cache, ttl, now, language), tone: 'plain' }]]
+  const status = statusOf(cache, ttl, now)
+  const short = status.kind === 'active' ? words.activeShort(clockTime(cache.last!.at + ttl), ttlLabel(ttl)) : undefined
+  const rows: Draft[] = [[label(words.cache), { text: cacheStatus(cache, ttl, now, language), tone: 'plain', short }]]
   const marker: Row | undefined = cache.clearedAt === undefined ? undefined
     : [{ text: `${words.clearedAt} ${clockTime(cache.clearedAt)}`, tone: 'dim' }]
   const losses = cache.losses.slice(0, maxLosses)
@@ -222,13 +242,15 @@ function cacheRows (cache: Cache, ttl: number, now: number, words: Words, langua
   }
   const lost = losses.map(loss => `−${tokens(loss.lost)}`)
   const lostWidth = Math.max(...lost.map(text => text.length))
-  const lines: Row[] = losses.map((loss, i) => [
+  const lines: Draft[] = losses.map((loss, i) => [
     { text: `${clockTime(loss.at)}  `, tone: 'dim' },
     { text: `${lost[i]!.padEnd(lostWidth)}  `, tone: 'plain' },
-    { text: loss.cause === 'expired' ? words.causes.expired(span(loss.gap)) : words.causes[loss.cause], tone: 'plain' },
+    loss.cause === 'expired'
+      ? { text: words.causes.expired(span(loss.gap)), tone: 'plain', short: words.causesShort.expired(span(loss.gap)) }
+      : { text: words.causes[loss.cause], tone: 'plain', short: words.causesShort[loss.cause] },
   ])
   if (marker !== undefined) lines.unshift(marker)
-  return [...rows, ...lines.map((line, i): Row => [label(i === 0 ? words.losses : ''), ...line])]
+  return [...rows, ...lines.map((line, i): Draft => [label(i === 0 ? words.losses : ''), ...line])]
 }
 
 /** The cost row: the whole session's cost, subagents included, with its scope said dim. */
@@ -283,7 +305,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     const fits = [words.scope, words.scopeShort].map(scope => costRow(cost, words, scope, labelWidth)).find(row => widthOfRow(row) <= content)
     if (fits !== undefined) rows.push(fits)
   }
-  rows.push(...extra)
+  rows.push(...extra.map(row => shorten(row, content)))
 
   const fitted = rows.map(row => fitRow(row, content))
   return { width: content + FRAME, content, height: fitted.length + 2, rows: fitted }
