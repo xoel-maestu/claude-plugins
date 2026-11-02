@@ -85,18 +85,19 @@ const trimmed = (card: Card | null) => lines(card).map(line => line.trimEnd())
 
 test('with requests the card adds the last one, the session and the hit rate, as wide as they need', () => {
   const card = cardOf(WITH_TOKENS, 'en', 115)!
-  expect(card.content).toBe(78)
-  expect(card.width).toBe(82)
+  expect(card.content).toBe(70)
+  expect(card.width).toBe(74)
   expect(trimmed(card)).toEqual([
     ...CONTEXT_ROWS,
-    '━'.repeat(48) + '─'.repeat(30),
+    '━'.repeat(43) + '─'.repeat(27),
     'Autocompact at ~167k',
     'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
-    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k    $4.12',
+    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
     'Cache hit      92%',
+    'Cost           $4.12 (session, all agents)',
   ])
-  expect(lines(card).every(line => line.length === 78)).toBe(true)
-  expect(card.height).toBe(8)
+  expect(lines(card).every(line => line.length === 70)).toBe(true)
+  expect(card.height).toBe(9)
 })
 
 test('the token rows: labels plain, the names of the counts dim, the figures plain', () => {
@@ -116,9 +117,10 @@ test('where the full rows do not fit, each splits in two, then the names shorten
   expect(trimmed(split).slice(3)).toEqual([
     'Last request   in 1.2k   out 2.4k',
     '               cache read 118k   cache write 5.1k',
-    'Session        in 31k    out 88k    $4.12',
+    'Session        in 31k    out 88k',
     '               cache read 2.1M   cache write 160k',
     'Cache hit      92%',
+    'Cost           $4.12 (session, all agents)',
   ])
   expect(lines(split).every(line => line.length === split.content)).toBe(true)
 
@@ -127,16 +129,31 @@ test('where the full rows do not fit, each splits in two, then the names shorten
   expect(trimmed(short).slice(3)).toEqual([
     'Last        in 1.2k   out 2.4k',
     '            c.read 118k   c.write 5.1k',
-    'Session     in 31k    out 88k    $4.12',
+    'Session     in 31k    out 88k',
     '            c.read 2.1M   c.write 160k',
     'Cache hit   92%',
+    'Cost        $4.12 (all agents)',
   ])
 
-  // Narrower still: the shortest form, cut at the border, one line a row.
+  // Narrower still: no form fits, so the token rows (and the cost) are left out, no number cut.
   const cut = cardOf(WITH_TOKENS, 'en', 30)!
   expect(cut.width).toBe(30)
   expect(lines(cut).every(line => line.length === 26)).toBe(true)
-  expect(lines(cut)[3]).toBe('Last        in 1.2k   out ')
+  expect(trimmed(cut)).toEqual(['Context   124.3k / 200k', '━'.repeat(16) + '─'.repeat(10), 'Autocompact at ~167k'])
+})
+
+test('the cost row takes its short scope where the full one does not fit, and is left out where neither does', () => {
+  const view = { ...WITH_TOKENS, cost: 1234.5 }
+  // 40 inside the border: the short token form, the cost scope shortened.
+  expect(trimmed(cardOf(view, 'en', 44)).at(-1)).toBe('Cost        $1234.50 (all agents)')
+})
+
+test('a cost of zero (a subscription) or none gives no cost row', () => {
+  for (const cost of [0, null, undefined]) {
+    const rows = trimmed(cardOf({ ...WITH_TOKENS, cost }, 'en', 115))
+    expect(rows.at(-1)).toBe('Cache hit      92%')
+    expect(rows.some(line => line.includes('$'))).toBe(false)
+  }
 })
 
 test('no request yet: no token rows, no zeros', () => {
@@ -151,14 +168,15 @@ test('without a cost the session row ends at its counts; with nothing sent there
   const zero = { input: 0, output: 10, cacheRead: 0, cacheWrite: 0 }
   const noHit = trimmed(cardOf({ ...WITH_TOKENS, ledger: { last: { ...zero, model: 'model-a', at: 1 }, total: zero, requests: 1 } }, 'en', 115))
   expect(noHit.some(line => line.startsWith('Cache hit'))).toBe(false)
-  expect(noHit.at(-1)).toBe('Session        in 0   cache read 0   cache write 0   out 10   $4.12')
+  expect(noHit.slice(-2)).toEqual(['Session        in 0   cache read 0   cache write 0   out 10', 'Cost           $4.12 (session, all agents)'])
 })
 
 test('the token rows in Spanish', () => {
   expect(trimmed(cardOf(WITH_TOKENS, 'es', 115)).slice(3)).toEqual([
     'Última petición    entrada 1.2k   caché leída 118k   caché escrita 5.1k   salida 2.4k',
-    'Sesión             entrada 31k    caché leída 2.1M   caché escrita 160k   salida 88k    $4.12',
+    'Sesión             entrada 31k    caché leída 2.1M   caché escrita 160k   salida 88k',
     'Acierto de caché   92%',
+    'Coste              $4.12 (sesión, todos los agentes)',
   ])
   expect(trimmed(cardOf(WITH_TOKENS, 'es', 44)).slice(3, 5)).toEqual([
     'Última    ent. 1.2k   sal. 2.4k',
@@ -169,7 +187,8 @@ test('the token rows in Spanish', () => {
 test('as text the token rows come whole, at their widest', () => {
   expect(cardText(WITH_TOKENS, 'en').split('\n').slice(3)).toEqual([
     'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
-    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k    $4.12',
+    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
     'Cache hit      92%',
+    'Cost           $4.12 (session, all agents)',
   ])
 })

@@ -14,8 +14,9 @@ Hover the meter to open a card with the detail; `/context-meter` prints the same
 │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━────────────────────────────── │
 │ Autocompact at ~167k                                                           │
 │ Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k         │
-│ Session        in 31k    cache read 2.1M   cache write 160k   out 88k    $4.12 │
+│ Session        in 31k    cache read 2.1M   cache write 160k   out 88k          │
 │ Cache hit      92%                                                             │
+│ Cost           $4.12 (session, all agents)                                     │
 ╰────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -24,10 +25,13 @@ Where the band is narrower than that, each token row splits in two, then the nam
 ```
 Last request   in 1.2k   out 2.4k                 Last        in 1.2k   out 2.4k
                cache read 118k   cache write 5.1k             c.read 118k   c.write 5.1k
-Session        in 31k    out 88k    $4.12         Session     in 31k    out 88k    $4.12
+Session        in 31k    out 88k                  Session     in 31k    out 88k
                cache read 2.1M   cache write 160k             c.read 2.1M   c.write 160k
 Cache hit      92%                                Cache hit   92%
+Cost           $4.12 (session, all agents)        Cost        $4.12 (all agents)
 ```
+
+On a band too narrow for even the shortest form (under about 35 columns) the token and cost rows are left out; numbers are never cut.
 
 ## Install
 
@@ -42,7 +46,7 @@ Cache hit      92%                                Cache hit   92%
 - The autocompact point comes from the same breakdown, read again with every estimate, when the window changes, and after a start, `/clear`, a compaction or an autocompact switch in `/config`; when auto-compaction is off or unknown its row is left out and the card is a row shorter.
 - The figure is read again every 2 s (a free call), to catch resumes and rewinds.
 - Colors: dim below `warnAt`, theme `warning` from `warnAt`, theme `error` from `dangerAt` (given the wrong way round, the two are swapped).
-- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them: uncached input (`in`), input the prompt cache served (`cache read`), input written to it (`cache write`) and output (`out`). Session ends with the session's cost, `$.session.usage().cost.usd`, when the host reports one. **Cache hit** is cache read over cache read, cache write and uncached input for the session. Before the first response these rows are left out, never shown as zeros.
+- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them: uncached input (`in`), input the prompt cache served (`cache read`), input written to it (`cache write`) and output (`out`). **Cost** is on its own row, labelled as the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is left out when the host reports no cost or a cost of 0 (as on a subscription). **Cache hit** is cache read over cache read, cache write and uncached input for the session. Before the first response these rows are left out, never shown as zeros.
 - The counts live in `$.state` (`ledger`), so a reload of the plugin keeps them. They count from the session's start (`$.session.usage().startedAt`): `/clear` empties them, and a ledger written for another start is dropped.
 - Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most.
 
