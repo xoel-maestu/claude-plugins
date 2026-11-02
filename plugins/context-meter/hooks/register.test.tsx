@@ -656,6 +656,27 @@ test('the countdown is drawn once a minute, never each second', async ($, on) =>
   expect(writes.now).toBe(before + 11)
 })
 
+test('with no cache (before the first request, after /clear) the tick reads nothing', async ($, on) => {
+  let reads = 0
+  on('state.get', ($, e, next) => {
+    if ((e as { key: string }).key === 'cache') reads += 1
+    return next(e)
+  })
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  let before = reads
+  await w.clock.advance(MIN)
+  expect(reads).toBe(before)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await $.session.end({ reason: 'clear' } as never)
+  await measure($, 62)
+  await w.clock.advance(2000)
+  before = reads
+  await w.clock.advance(MIN)
+  expect(reads).toBe(before)
+})
+
 test('without rate limits the cache lives 5m and then reads as expired', async ($, on) => {
   const w = world(on, fill(62))
   await startSession($)
