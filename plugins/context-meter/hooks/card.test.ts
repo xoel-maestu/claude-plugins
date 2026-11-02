@@ -1,8 +1,9 @@
 // Pure logic, run with `claude plugin test .`: synthetic figures only.
 import { expect, test } from 'claude-code/testing'
 
-import { cacheStatus, cardOf, cardText, clockTime, minutes, span, tokens } from './card'
+import { cacheStatus, cardOf, cardText, clockTime, minutes, span, tokens, usdText } from './card'
 import type { Card } from './card'
+import { EMPTY } from './cache'
 
 test('token counts use k and M with one decimal, dropping a trailing .0', () => {
   expect(tokens(950)).toBe('950')
@@ -89,7 +90,7 @@ const TABLE = [
   'Last request   124.3k   118k         5.1k          1.2k       2.4k',
   'Session        2.3M     2.1M         160k          31k        88k',
   'Cache hit      92% of input read from cache',
-  'Cost           $4.12 (session, all agents)',
+  'Cost           ≈ $4.12 at list prices (session, all agents)',
 ]
 
 test('with requests the card adds the token table, the hit rate and the cost, as wide as they need', () => {
@@ -123,15 +124,15 @@ test('where the band is narrow, Uncached goes first, then Cache write; nothing w
     'Last request   124.3k   118k         5.1k          2.4k',
     'Session        2.3M     2.1M         160k          88k',
   ])
-  // 60 columns: a band of 55, 51 inside the border.
+  // 60 columns: a band of 55, 51 inside the border. The cost row widens the card to the band, its tail short.
   const three = cardOf(WITH_TOKENS, 'en', 55)!
-  expect(three.width).toBe(47)
+  expect(three.width).toBe(55)
   expect(trimmed(three).slice(3)).toEqual([
     '               Input    Cache read   Output',
     'Last request   124.3k   118k         2.4k',
     'Session        2.3M     2.1M         88k',
     'Cache hit      92% of input read from cache',
-    'Cost           $4.12 (session, all agents)',
+    'Cost           ≈ $4.12 (estimate)',
   ])
   expect(lines(three).every(line => line.length === three.content)).toBe(true)
 
@@ -141,16 +142,34 @@ test('where the band is narrow, Uncached goes first, then Cache write; nothing w
   expect(trimmed(cut)).toEqual(['Context   124.3k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompact at ~167k'])
 })
 
-test('the cost row takes its short scope where the full one does not fit', () => {
+test('the cost row takes its short tail where the full one does not fit, else the amount alone', () => {
   const view = { ...WITH_TOKENS, cost: 1234.5 }
-  // 43 inside the border: the three-column table, the cost scope shortened.
-  expect(trimmed(cardOf(view, 'en', 47)).at(-1)).toBe('Cost           $1234.50 (all agents)')
+  // 43 inside the border: the three-column table, the tail shortened.
+  expect(trimmed(cardOf(view, 'en', 47)).at(-1)).toBe('Cost           ≈ $1234.50 (estimate)')
+  expect(trimmed(cardOf(view, 'es', 60)).at(-1)).toBe('Coste               ≈ $1234.50 (estimación)')
+  const subscription = { ...view, cost: 0.004, cache: { ...EMPTY, isSubscription: true } }
+  expect(trimmed(cardOf(subscription, 'en', 47)).at(-1)).toBe('Cost           ≈ $0.004 (not billed)')
+  expect(trimmed(cardOf(subscription, 'es', 60)).at(-1)).toBe('Coste               ≈ $0.004 (no se factura)')
+  // A small table at its narrowest (42 inside the border) and a huge amount: the tail would not fit
+  // even short, so the amount stands alone, no word cut.
+  const one = { input: 1, cacheRead: 1, cacheWrite: 1, output: 1 }
+  const small = { ...view, cost: 1e10, ledger: { ...LEDGER, last: { ...one, model: 'model-a', at: 1 }, total: one } }
+  const narrow = cardOf(small, 'en', 46)!
+  expect(narrow.content).toBe(42)
+  expect(trimmed(narrow).at(-1)).toBe('Cost           ≈ $10000000000.00')
 })
 
-test('a cost under a cent reads <$0.01, not $0.00', () => {
-  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           <$0.01 (session, all agents)')
-  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'es', 115)).at(-1)).toBe('Coste               <$0.01 (sesión, todos los agentes)')
-  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.01 }, 'en', 115)).at(-1)).toBe('Cost           $0.01 (session, all agents)')
+test('the cost row on a subscription: at API list prices, not billed on the plan', () => {
+  const view = { ...WITH_TOKENS, cost: 0.004, cache: { ...EMPTY, isSubscription: true } }
+  expect(trimmed(cardOf(view, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+  expect(trimmed(cardOf(view, 'es', 115)).at(-1)).toBe('Coste               ≈ $0.004 a precio de lista de la API (no se factura en tu plan)')
+  // The tail is dim, the label and the amount plain.
+  expect(cardOf(view, 'en', 115)!.rows.at(-1)!.map(cell => cell.tone).slice(0, 3)).toEqual(['plain', 'plain', 'dim'])
+})
+
+test('amounts: two decimals from a cent, sub-cent from the first significant digit', () => {
+  expect([4.123, 0.01, 0.0042, 0.004, 0.0004, 0.00999].map(usdText)).toEqual(['$4.12', '$0.01', '$0.004', '$0.004', '$0.0004', '$0.010'])
+  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.004 at list prices (session, all agents)')
 })
 
 test('a cost of zero (a subscription) or none gives no cost row', () => {
@@ -171,7 +190,7 @@ test('with nothing sent there is no hit rate', () => {
   const zero = { input: 0, output: 10, cacheRead: 0, cacheWrite: 0 }
   const noHit = trimmed(cardOf({ ...WITH_TOKENS, ledger: { last: { ...zero, model: 'model-a', at: 1 }, total: zero, requests: 1 } }, 'en', 115))
   expect(noHit.some(line => line.startsWith('Cache hit'))).toBe(false)
-  expect(noHit.slice(-2)).toEqual(['Session        0       0            0             0          10', 'Cost           $4.12 (session, all agents)'])
+  expect(noHit.slice(-2)).toEqual(['Session        0       0            0             0          10', 'Cost           ≈ $4.12 at list prices (session, all agents)'])
 })
 
 test('the token table in Spanish', () => {
@@ -180,7 +199,7 @@ test('the token table in Spanish', () => {
     'Última petición     124.3k    118k          5.1k            1.2k        2.4k',
     'Sesión              2.3M      2.1M          160k            31k         88k',
     'Acierto de caché    92% de la entrada leída de caché',
-    'Coste               $4.12 (sesión, todos los agentes)',
+    'Coste               ≈ $4.12 a precio de lista (sesión, todos los agentes)',
   ])
   expect(trimmed(cardOf(WITH_TOKENS, 'es', 55)).slice(3, 4)).toEqual(['                    Entrada   Caché leída   Salida'])
 })
@@ -230,6 +249,15 @@ test('the cache line: active until the expiry with whole minutes left and the TT
   expect(cacheStatus(CACHE, HOUR, HOUR - 30_000, 'es')).toBe(`activa hasta las ${clockTime(HOUR)} (en <1m, TTL 1h)`)
   expect(cacheStatus(CACHE, 5 * MIN, 8 * MIN, 'es')).toBe('caducada hace 3m')
   expect(cacheStatus({ ...CACHE, last: undefined }, HOUR, 0, 'es')).toBe('sin caché todavía')
+})
+
+test('an inferred TTL is marked with ?, a set or observed one is not, in full and short forms', () => {
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'en', true)).toBe(`active until ${clockTime(HOUR)} (in 41m, TTL 1h?)`)
+  expect(cacheStatus(CACHE, 5 * MIN, 0, 'es', true)).toBe(`activa hasta las ${clockTime(5 * MIN)} (en 5m, TTL 5m?)`)
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'en', false)).toBe(`active until ${clockTime(HOUR)} (in 41m, TTL 1h)`)
+  const inferred = { ...WITH_CACHE, isTtlInferred: true }
+  expect(trimmed(cardOf(inferred, 'en', 115))[8]).toBe(`Cache          active until ${clockTime(HOUR)} (in 41m, TTL 1h?)`)
+  expect(trimmed(cardOf(inferred, 'en', 44)).at(-5)).toBe(`Cache          until ${clockTime(HOUR)} (TTL 1h?)`)
 })
 
 test('the cache rows after the table: the status, then the losses newest first, each cause said', () => {

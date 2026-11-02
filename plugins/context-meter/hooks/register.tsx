@@ -3,12 +3,13 @@ import type { EngineInterface, Register, RenderNode, RenderViewport, SessionCont
 
 import type { ContextMeterFill } from '../types'
 
-import { EMPTY as NO_CACHE, cleared, markCompact, observe, since as cacheSince, ttlOf } from './cache'
+import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, since as cacheSince, ttlInfo } from './cache'
 import type { TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
 import { EMPTY, add, since } from './ledger'
+import { MAX_READ, lastTtl } from './transcript'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
 const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, null as number | null)
@@ -39,6 +40,10 @@ let drawnStatus = ''
 let hasCache = false
 // Whether the cache already counts the session as a subscription (rate limits seen).
 let isSubscriptionSeen = false
+// The main session's transcript, from the classic hook events' `transcript_path`, and its size when
+// last read: a file the same size is not read again.
+let transcriptPath: string | undefined
+let transcriptSize = -1
 let isCounting = false
 let countedWindow = 0
 let isCompactAtStale = true
@@ -145,6 +150,33 @@ async function keepSession ($: EngineInterface, startedAt: number) {
   hasCache = current.last !== undefined
 }
 
+/** Takes the main session's transcript path from a classic hook event; a subagent's is not its. */
+function seeTranscript (e: { transcript_path?: string; agent_id?: string }) {
+  if (e.agent_id !== undefined || typeof e.transcript_path !== 'string' || e.transcript_path === '') return
+  if (e.transcript_path !== transcriptPath) transcriptSize = -1
+  transcriptPath = e.transcript_path
+}
+
+/**
+ * The TTL the last main-thread cache write used, from the session transcript. `$.fs` reads only
+ * whole files, up to 4 MiB: the file is read when its size changed, at most once per request and
+ * once at the end of a turn, and not at all past 4 MiB (the TTL last observed then stands). A pure
+ * read keeps the TTL before it; a failed read changes nothing.
+ */
+async function readTranscript ($: EngineInterface) {
+  const path = transcriptPath
+  if (path === undefined) return
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined || stat.kind !== 'file' || stat.size === transcriptSize || stat.size > MAX_READ) return
+  const text = await $.fs.read(path).catch(() => undefined)
+  if (text === undefined || path !== transcriptPath) return
+  transcriptSize = stat.size
+  const ttl = lastTtl(text)
+  if (ttl === null) return
+  const cached = await read($, cache)
+  if (observeTtl(cached, ttl) !== cached) await update($, cache, state => observeTtl(state, ttl))
+}
+
 /** The recordings of main-thread responses, one after another. */
 let recording: Promise<void> = Promise.resolve()
 
@@ -159,6 +191,8 @@ async function record ($: EngineInterface, usage: TurnUsage) {
   hasCache = true
   if (rateLimits.length > 0) isSubscriptionSeen = true
   await showCost($, spent)
+  // The response may not be in the transcript yet: then the one before it is read, and the turn's end reads again.
+  await readTranscript($)
 }
 
 /**
@@ -176,7 +210,8 @@ async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
   const [shown, threshold, counted, spent, cached, tick] = await Promise.all([
     read($, fill), read($, compactAt), read($, ledger), read($, cost), read($, cache), read($, drawnAt),
   ])
-  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl: ttlOf(cached, ttlSetting), now: now ?? tick }
+  const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick }
 }
 
 /**
@@ -187,7 +222,8 @@ async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
 async function tick ($: EngineInterface) {
   if (!hasCache) return
   const [cached, now] = await Promise.all([read($, cache), $.clock.now()])
-  const line = cacheStatus(cached, ttlOf(cached, ttlSetting), now, 'en')
+  const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
+  const line = cacheStatus(cached, ttl, now, 'en', isInferred)
   if (line === drawnStatus) return
   drawnStatus = line
   await update($, drawnAt, () => now)
@@ -231,6 +267,8 @@ export const register: Register = (on, options) => {
   stretch = 0
   estimatedIn = -1
   hintWidth = 0
+  transcriptPath = undefined
+  transcriptSize = -1
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -286,6 +324,22 @@ export const register: Register = (on, options) => {
       enqueue(() => record($, usage))
     }
     return result
+  })
+
+  // The classic hook events carry the transcript's path: the start (a /clear's new file too) and each
+  // prompt give it; the end of a main-thread turn reads the transcript, its last response written by then.
+  on('classic.SessionStart', async ($, e, next) => {
+    seeTranscript(e)
+    return next(e)
+  })
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    seeTranscript(e)
+    return next(e)
+  })
+  on('classic.Stop', async ($, e, next) => {
+    seeTranscript(e)
+    if (e.agent_id === undefined) enqueue(() => readTranscript($))
+    return next(e)
   })
 
   // A compaction of the main conversation opens a new stretch: the next check estimates anew. The
