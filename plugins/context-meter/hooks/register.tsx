@@ -3,8 +3,8 @@ import type { EngineInterface, Register, RenderNode, RenderViewport, SessionCont
 
 import type { ContextMeterFill } from '../types'
 
-import { cardOf, cardText } from './card'
-import type { Language } from './card'
+import { CARD_WIDTH, cardOf, cardText } from './card'
+import type { Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
@@ -54,6 +54,12 @@ function widthOfNode (node: RenderNode | undefined, modes: readonly string[]): n
 function roomOf (e: { surface: string; viewport?: RenderViewport }) {
   if (e.surface !== 'terminal' || e.viewport === undefined) return Infinity
   return e.viewport.columns - FOOTER - (hintWidth > 0 ? 1 + hintWidth : 0)
+}
+
+/** The card's width: 40 columns, or what the terminal leaves inside the footer's padding. */
+function cardRoomOf (e: { surface: string; viewport?: RenderViewport }) {
+  if (e.surface !== 'terminal' || e.viewport === undefined) return CARD_WIDTH
+  return Math.min(CARD_WIDTH, e.viewport.columns - 4)
 }
 
 const same = (a: ContextMeterFill, b: ContextMeterFill) => JSON.stringify(a) === JSON.stringify(b)
@@ -216,8 +222,9 @@ export const register: Register = (on, options) => {
     const color = colorFor(shown.percent)
     const isDim = color === undefined
     const bar = barOf(shown.percent, text)
-    const card = cardOf(shown, threshold, language)
-    const cardWidth = card === null ? 0 : card.bar.filled + card.bar.empty
+    const card = cardOf(shown, threshold, language, cardRoomOf(e))
+    const toneProps = (tone: Tone) =>
+      tone === 'meter' ? { color, dimColor: isDim } : tone === 'dim' ? { dimColor: true } : {}
 
     return (
       <Box flexDirection="row">
@@ -227,13 +234,21 @@ export const register: Register = (on, options) => {
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
           <Text color={color} dimColor={isDim}>{text}</Text>
           {card === null ? null : (
-            // The card: over the rows above the meter, its right edge on the meter's, shown while hovered.
-            <Box position="absolute" top={-2} right={0} width={cardWidth} flexDirection="column" display="none" hover={{ display: 'flex' }}>
-              <Text>{card.line.padEnd(cardWidth)}</Text>
-              <Box flexDirection="row">
-                <Text color={color} dimColor={isDim}>{'━'.repeat(card.bar.filled)}</Text>
-                <Text dimColor>{'─'.repeat(card.bar.empty)}</Text>
-              </Box>
+            // The card: its bottom border on the row above the meter, its right edge on the meter's,
+            // shown while hovered. The padding is drawn as spaces in each row, so every cell inside
+            // the border is written over what lies beneath (the theme has no background key to paint).
+            <Box
+              position="absolute" top={-card.height} right={0} width={card.width} height={card.height}
+              flexDirection="column" borderStyle="round" borderDimColor
+              display="none" hover={{ display: 'flex' }}
+            >
+              {card.rows.map(cells => (
+                <Box flexDirection="row">
+                  <Text> </Text>
+                  {cells.map(cell => <Text {...toneProps(cell.tone)}>{cell.text}</Text>)}
+                  <Text> </Text>
+                </Box>
+              ))}
             </Box>
           )}
         </Box>

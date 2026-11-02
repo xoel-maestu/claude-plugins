@@ -196,7 +196,7 @@ test('the estimate is measured against the context window, as the figure is', as
   world(on, fill(), { percentage: 20, totalTokens: 32_000, raw: 160_000 })
   await startSession($)
   const result = await runCommand($)
-  expect(result.text?.split('\n')[0]).toBe('Context  ~32k / 200k  ~16%')
+  expect(result.text?.split('\n')[0]).toBe('Context   ~32k / 200k   ~16%')
 })
 
 test('reads the autocompact point again after a compaction', async ($, on) => {
@@ -206,7 +206,7 @@ test('reads the autocompact point again after a compaction', async ($, on) => {
   w.live.breakdown = { percentage: 6, totalTokens: 12_000, threshold: 150_000 }
   await $.session.compact({ trigger: 'manual', messages: [summary] })
   await w.clock.advance(2000)
-  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  ~12k / 200k  ~6%   autocompact at ~150k')
+  expect((await runCommand($)).text?.split('\n')).toEqual(['Context   ~12k / 200k   ~6%', '━'.repeat(2) + '─'.repeat(34), 'Autocompact at ~150k'])
 })
 
 test('reads the autocompact point again after /clear', async ($, on) => {
@@ -216,7 +216,7 @@ test('reads the autocompact point again after /clear', async ($, on) => {
   w.live.breakdown = { percentage: 60, totalTokens: 120_000, threshold: 150_000 }
   await $.session.end({ reason: 'clear' } as never)
   await measure($, 62)
-  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  124k / 200k  62%   autocompact at ~150k')
+  expect((await runCommand($)).text?.split('\n')).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompact at ~150k'])
 })
 
 test('reads the autocompact point again when autocompact is switched in /config', async ($, on) => {
@@ -226,44 +226,85 @@ test('reads the autocompact point again when autocompact is switched in /config'
   w.live.breakdown = { percentage: 60, totalTokens: 120_000 }
   await $.config.set({ key: 'autoCompact', value: false, previous: true, provider: { plugin: 'engine', tier: 'core' }, origin: { kind: 'composer' } } as never)
   await w.clock.advance(2000)
-  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  124k / 200k  62%')
+  expect((await runCommand($)).text?.split('\n')).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
 })
 
-test('the hover card: hidden, above the meter, with the autocompact point', async ($, on) => {
+type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+/** The card the meter draws: the Box placed out of the flow, and its rows as text. */
+async function cardIn (ui: { drawn: () => Promise<unknown> }) {
+  const find = (node: unknown): Node | undefined => {
+    if (node === null || typeof node !== 'object') return undefined
+    const n = node as Node
+    if (n.props?.position === 'absolute') return n
+    for (const child of n.children ?? []) {
+      const found = find(child)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  const box = find(await ui.drawn())
+  const text = (node: unknown): string =>
+    typeof node === 'string' ? node : ((node as Node | null)?.children ?? []).map(text).join('')
+  return { box, rows: (box?.children ?? []).map(text) }
+}
+
+test('the hover card: a rounded dim border, hidden, its height above the meter, three rows', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
-  const ui = await footer($)
-  const line = await ui.find({ type: 'Text', text: /^Context / })
-  expect(line?.text?.trimEnd()).toBe('Context  124k / 200k  62%   autocompact at ~167k')
-  const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('"position":"absolute"')
-  expect(drawn).toContain('"top":-2')
-  expect(drawn).toContain('"display":"none"')
-  expect(drawn).toContain('"hover":{"display":"flex"}')
+  const { box, rows } = await cardIn(await footer($, 120))
+  expect(box?.props).toMatchObject({
+    position: 'absolute', right: 0, top: -5, width: 40, height: 5,
+    borderStyle: 'round', borderDimColor: true, display: 'none',
+  })
+  expect(JSON.stringify(box)).toContain('"hover":{"display":"flex"}')
+  // Each row is the content (36) with a column of padding at each side: the border's inside.
+  expect(rows).toEqual([
+    ' ' + 'Context   124k / 200k   62%'.padEnd(36) + ' ',
+    ' ' + '━'.repeat(22) + '─'.repeat(14) + ' ',
+    ' ' + 'Autocompact at ~167k'.padEnd(36) + ' ',
+  ])
 })
 
-test('the card leaves out the autocompact point when the breakdown has none', async ($, on) => {
+test('the card leaves out the autocompact row when the breakdown has none, and sits a row lower', async ($, on) => {
   world(on, fill(62), null)
   await startSession($)
   await measure($, 62)
-  const line = await (await footer($)).find({ type: 'Text', text: /^Context / })
-  expect(line?.text?.trimEnd()).toBe('Context  124k / 200k  62%')
+  const { box, rows } = await cardIn(await footer($))
+  expect(box?.props).toMatchObject({ top: -4, height: 4 })
+  expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
+})
+
+test('the card narrows to a short terminal and takes the meter color past warnAt', async ($, on) => {
+  world(on, fill(62), null)
+  await startSession($)
+  await measure($, 62)
+  const { box } = await cardIn(await footer($, 34))
+  expect(box?.props).toMatchObject({ width: 30 })
+  expect(JSON.stringify(box)).toContain('"color":"warning"')
 })
 
 test('the card in Spanish', { options: { language: 'es' } }, async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
-  const line = await (await footer($)).find({ type: 'Text', text: /^Contexto / })
-  expect(line?.text?.trimEnd()).toBe('Contexto  124k / 200k  62%   autocompacta en ~167k')
+  const { rows } = await cardIn(await footer($))
+  expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
+})
+
+test('the hidden card takes no width on the row', async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  // 46 - 26 = 20 columns: the 14 of the meter fit, the 40 of the card would not.
+  expect(await row(await footer($, 46))).toEqual(['ctx ', '━━━━', '── ', '62%'])
 })
 
 test('/context-meter prints the card as text, or says there is no figure', async ($, on) => {
   const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   const result = await runCommand($)
-  expect(result.text).toBe('Context  124k / 200k  62%   autocompact at ~167k\n' + '━'.repeat(30) + '─'.repeat(18))
+  expect(result.text).toBe('Context   124k / 200k   62%\n' + '━'.repeat(22) + '─'.repeat(14) + '\nAutocompact at ~167k')
   w.live.context = fill()
   w.live.breakdown = null
   await $.session.end({ reason: 'clear' } as never)
