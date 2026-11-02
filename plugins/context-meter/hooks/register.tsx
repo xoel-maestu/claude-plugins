@@ -17,12 +17,13 @@ const SEPARATOR = ' · '
 const FOOTER = 4 + 2 + 20
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
-// point was read for, the stretch (bumped by every figure, so a count that began before one is
-// stale), and the hint line's width as last drawn on the terminal.
+// point was read for, the stretch (bumped by every figure and every /clear, so a count that began
+// before one is stale), the stretch last estimated, and the hint line's width as last drawn.
 let timer: Timer | undefined
 let isCounting = false
 let countedWindow = 0
 let stretch = 0
+let estimatedIn = -1
 let hintWidth = 0
 
 /** Columns a text takes: one per character, none for a variation selector. */
@@ -79,8 +80,8 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
     stretch += 1
     await show($, { percent: context.percent!, tokens: context.tokens, window: context.window, isEstimate: false })
   }
-  const current = await read($, fill)
-  const needsEstimate = !hasFigure && current?.isEstimate !== true
+  // Once per stretch without a figure, whether or not the count gives a breakdown.
+  const needsEstimate = !hasFigure && estimatedIn !== stretch
   const needsCompactAt = countedWindow !== context.window
   if (!canCount || isCounting || !(needsEstimate || needsCompactAt)) return
 
@@ -93,6 +94,7 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
     if ((await read($, compactAt)) !== threshold) await update($, compactAt, () => threshold)
     // A figure that came in while counting stands: the estimate is dropped.
     if (needsEstimate && stretch === countedIn) {
+      estimatedIn = countedIn
       await show($, breakdown
         ? estimateOf(breakdown.totalTokens, context.window)
         : null)
@@ -121,6 +123,7 @@ export const register: Register = (on, options) => {
   isCounting = false
   countedWindow = 0
   stretch = 0
+  estimatedIn = -1
   hintWidth = 0
 
   on('session.start', async ($, e, next) => {
@@ -137,6 +140,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       // A /clear raises no session.start after it: the timer goes on and the next check estimates anew.
+      stretch += 1
       await update($, fill, () => null)
     } else {
       timer?.cancel()

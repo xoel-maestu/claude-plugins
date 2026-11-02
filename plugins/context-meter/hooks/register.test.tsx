@@ -163,9 +163,16 @@ test('estimates again after a compaction', async ($, on) => {
 })
 
 test('shows nothing with neither a figure nor a breakdown', async ($, on) => {
-  world(on, fill(), null)
+  const w = world(on, fill(), null)
   await startSession($)
+  await w.clock.advance(10_000)
   expect(await (await footer($)).find({ key: 'context-meter' })).toBeUndefined()
+  // Counted once for the stretch even with nothing to show; a compaction opens a new one.
+  expect(w.live.counts).toBe(1)
+  await measure($, 30)
+  await measure($)
+  await w.clock.advance(10_000)
+  expect(w.live.counts).toBe(2)
 })
 
 test('a figure that arrives while counting is not replaced by the estimate', async ($, on) => {
