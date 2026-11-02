@@ -22,10 +22,10 @@ Context  124.3k / 200k  62%   autocompact at ~167k
 ## What it shows
 
 - The figure is the engine's own (`$.session.usage().context`), the one the status line reads.
-- Before the first response of a window (fresh, resumed, compacted or rewound session) there is no figure: the meter counts the window once with the local summary breakdown (no requests) and marks it with `~` until the next response.
-- The autocompact point comes from the same breakdown; when auto-compaction is off or unknown the part is left out.
+- Before the first response of a window (fresh, resumed, compacted or rewound session) there is no figure: the meter counts the window once with the local summary breakdown (no requests) and marks it with `~` until the next response. The estimate is the breakdown's tokens over the model's window, the same denominator as the figure.
+- The autocompact point comes from the same breakdown, read again with every estimate, when the window changes, and after a start, `/clear`, a compaction or an autocompact switch in `/config`; when auto-compaction is off or unknown the part is left out.
 - The figure is read again every 2 s (a free call), to catch resumes and rewinds.
-- Colors: dim below `warnAt`, theme `warning` from `warnAt`, theme `error` from `dangerAt`.
+- Colors: dim below `warnAt`, theme `warning` from `warnAt`, theme `error` from `dangerAt` (given the wrong way round, the two are swapped).
 - Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most.
 
 ## Options (`/config`)

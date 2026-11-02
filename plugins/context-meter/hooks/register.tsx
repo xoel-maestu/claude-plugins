@@ -17,11 +17,13 @@ const SEPARATOR = ' · '
 const FOOTER = 4 + 2 + 20
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
-// point was read for, the stretch (bumped by every figure and every /clear, so a count that began
-// before one is stale), the stretch last estimated, and the hint line's width as last drawn.
+// point was read for and whether it is to be read again, the stretch (bumped by every figure,
+// compaction and /clear, so a count that began before one is stale), the stretch last estimated,
+// and the hint line's width as last drawn on the terminal.
 let timer: Timer | undefined
 let isCounting = false
 let countedWindow = 0
+let isCompactAtStale = true
 let stretch = 0
 let estimatedIn = -1
 let hintWidth = 0
@@ -72,7 +74,8 @@ const estimateOf = (tokens: number, window: number): ContextMeterFill =>
  * Takes the engine's figure when it has one. While it has none (no response yet in this window: a
  * fresh, resumed, compacted or rewound session) it counts the window once with the local summary
  * breakdown and keeps that estimate until the next response. The same count gives the autocompact
- * point, read again when the window changes. `canCount` false only takes a figure.
+ * point, read again with every estimate, when the window changes, and after a start, a /clear, a
+ * compaction or an autocompact switch in /config. `canCount` false only takes a figure.
  */
 async function sync ($: EngineInterface, context: SessionContextUsage, canCount: boolean) {
   const hasFigure = context.percent !== undefined
@@ -82,13 +85,17 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
   }
   // Once per stretch without a figure, whether or not the count gives a breakdown.
   const needsEstimate = !hasFigure && estimatedIn !== stretch
-  const needsCompactAt = countedWindow !== context.window
+  const needsCompactAt = isCompactAtStale || countedWindow !== context.window
   if (!canCount || isCounting || !(needsEstimate || needsCompactAt)) return
 
   isCounting = true
   const countedIn = stretch
+  // Cleared before the count, so a change that comes in while counting asks for the next one.
+  isCompactAtStale = false
+  let isCounted = false
   try {
     const { breakdown } = (await $.session.usage({ breakdown: 'summary' })).context
+    isCounted = true
     countedWindow = context.window
     const threshold = breakdown?.isAutoCompactEnabled ? breakdown.autoCompactThreshold ?? null : null
     if ((await read($, compactAt)) !== threshold) await update($, compactAt, () => threshold)
@@ -101,6 +108,7 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
     }
   } finally {
     isCounting = false
+    if (!isCounted) isCompactAtStale = true
   }
 }
 
@@ -122,6 +130,7 @@ export const register: Register = (on, options) => {
   timer = undefined
   isCounting = false
   countedWindow = 0
+  isCompactAtStale = true
   stretch = 0
   estimatedIn = -1
   hintWidth = 0
@@ -132,6 +141,7 @@ export const register: Register = (on, options) => {
       description: language === 'es' ? 'Muestra el llenado de la ventana de contexto' : 'Show the context window fill',
     })
     // Counting would hold up the start: the first count waits for the first check.
+    isCompactAtStale = true
     await sync($, (await $.session.usage()).context, false)
     startTimer($)
     return next(e)
@@ -141,6 +151,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       // A /clear raises no session.start after it: the timer goes on and the next check estimates anew.
       stretch += 1
+      isCompactAtStale = true
       await update($, fill, () => null)
     } else {
       timer?.cancel()
@@ -153,6 +164,23 @@ export const register: Register = (on, options) => {
     startTimer($)
     if (e.changed.includes('context')) await sync($, e.context, true)
     return next(e)
+  })
+
+  // A compaction of the main conversation opens a new stretch: the next check estimates anew.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (e.trigger !== 'precompute' && e.agentId === undefined && result.messages !== undefined) {
+      stretch += 1
+      isCompactAtStale = true
+    }
+    return result
+  })
+
+  // Autocompact switched in /config moves or drops the point: the next check reads it again.
+  on('config.set', { key: 'autoCompact' }, async ($, e, next) => {
+    const result = await next(e)
+    if (result.deny === undefined) isCompactAtStale = true
+    return result
   })
 
   on('command.run', { command: 'context-meter' }, async $ => {
