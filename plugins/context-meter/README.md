@@ -41,11 +41,15 @@ Hover the meter to open a card with the detail; `/context-meter` prints the same
 
 ## How the card is drawn
 
-The card is a `Box` inside the meter's keyed Box (`key="context-meter"`) in `SessionMode`: a rounded, dim border, 40 columns wide (less on a terminal narrower than 44), placed `position="absolute"` with `right={0}` and `top` at minus its height, so its bottom border sits on the row above the meter. It is drawn `display="none"` and revealed with `hover={{ display: 'flex' }}`; no hook runs on hover, and out of the flow it takes no width on the row.
+The meter is drawn in `SessionMode` (the footer row); the card is drawn in `AbovePrompt` (the band above the prompt). A card placed above the meter inside `SessionMode` was clipped in a real session (Claude Code 2.1.316, main screen): the footer lets about four rows rise above the meter's row, so the top border was lost and the rest sat over the prompt's border.
 
-`cardOf` builds it as a list of rows (each a list of pieces with a tone: the meter's color, plain or dim) and derives the height from them; a later section is one more row. Each row is padded with spaces to the content width and the horizontal padding is drawn as spaces too, so every cell inside the border is written over what lies beneath: the theme has no background key to paint the Box with.
+In `AbovePrompt` the hook returns what is beneath it (`next(e)`: the engine's node, another plugin's drawing) first and untouched, then an anchor `Box` as wide as the band (`e.props.bodyColumns`) and `height={0}`, so it adds no row. The card hangs from that anchor with `position="absolute"`, `bottom={0}` and `right={0}`: its bottom border is the band's last row, right above the prompt's top border, and its right edge is the band's. Out of the flow it moves nothing. With no figure, or while a survey holds the band, the hook returns `next(e)` as it came, so the band gets no row of its own. The card is a rounded, dim border, 40 columns wide, or as wide as the band where it is narrower. The anchor is a Box of its own because an engine node may not sit under a Box that sets a width.
 
-If the footer clips the card, the fallback is to draw it in `AbovePrompt`, right aligned, and join the meter and the card with a shared `hover.scope`. Not done yet: pending a check in a real session.
+The two sites are tied by a hover group: the meter's Box has `hover={{ scope: 'context-meter' }}` and the card is drawn `display="none"` with `hover={{ scope: 'context-meter', display: 'flex' }}`. Per the API, every element a plugin draws under one `scope`, in any site, lights while any of them is hovered, reveals included, so the card shows while the pointer is on the meter or on the card itself. No hook runs on hover. Since the card is no longer in the footer, a plugin drawn above the meter that sums what lies beneath it in `SessionMode` counts the meter alone.
+
+`cardOf` builds the card as a list of rows (each a list of pieces with a tone: the meter's color, plain or dim) and derives the height from them; a later section is one more row. Each row is padded with spaces to the content width and the horizontal padding is drawn as spaces too, so every cell inside the border is written over what lies beneath: the theme has no background key to paint the Box with.
+
+The band's body ends five columns before the terminal's edge (the engine keeps them for its `[-]` mark), and the footer's meter two before it, so the card's right edge sits three columns left of the meter's.
 
 ## Development
 
