@@ -3,13 +3,13 @@ import type { EngineInterface, Register, RenderNode, RenderViewport, SessionCont
 
 import type { ContextMeterFill } from '../types'
 
-import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, since as cacheSince, ttlInfo } from './cache'
+import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
 import type { TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
 import { EMPTY, add, since } from './ledger'
-import { MAX_READ, lastTtl } from './transcript'
+import { MAX_READ, TAIL, completeLines, lastTtl } from './transcript'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
 const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, null as number | null)
@@ -21,6 +21,9 @@ const cache = atom({ plugin: 'context-meter', key: 'cache' } as const, NO_CACHE)
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 
 const SYNC_MS = 2000
+// `$.store` keys: the TTL last observed and the last subscription reading, for the next session.
+const STORED_TTL = 'lastTtl'
+const STORED_SUBSCRIPTION = 'isSubscription'
 const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
@@ -41,7 +44,7 @@ let hasCache = false
 // Whether the cache already counts the session as a subscription (rate limits seen).
 let isSubscriptionSeen = false
 // The main session's transcript, from the classic hook events' `transcript_path`, and its size when
-// last read: a file the same size is not read again.
+// last read at a turn's end: a file the same size is not read again.
 let transcriptPath: string | undefined
 let transcriptSize = -1
 let isCounting = false
@@ -158,23 +161,55 @@ function seeTranscript (e: { transcript_path?: string; agent_id?: string }) {
 }
 
 /**
- * The TTL the last main-thread cache write used, from the session transcript. `$.fs` reads only
- * whole files, up to 4 MiB: the file is read when its size changed, at most once per request and
- * once at the end of a turn, and not at all past 4 MiB (the TTL last observed then stands). A pure
- * read keeps the TTL before it; a failed read changes nothing.
+ * The transcript's last complete lines: `tail -c` through `$.process.run` (the path one argv
+ * element, no shell), so a long session copies only its end; where that cannot run (no `tail`, as
+ * on Windows, or it fails) the whole file through `$.fs.read`, up to 4 MiB. Undefined when neither works.
+ */
+async function readTail ($: EngineInterface, path: string, size: number): Promise<string | undefined> {
+  const run = await $.process.run(['tail', '-c', String(TAIL), path], { timeoutMs: 5000 }).catch(() => undefined)
+  if (run !== undefined && run.exitCode === 0 && !run.isStdoutTruncated) return completeLines(run.stdout, size > TAIL)
+  if (size > MAX_READ) return undefined
+  return await $.fs.read(path).catch(() => undefined) as string | undefined
+}
+
+/**
+ * The TTL the last main-thread cache write used, from the session transcript's end: read at the end
+ * of each main turn, when its size changed. A pure read keeps the TTL before it; a failed read
+ * changes nothing. A new TTL is stored for the next session.
  */
 async function readTranscript ($: EngineInterface) {
   const path = transcriptPath
   if (path === undefined) return
   const stat = await $.fs.stat(path).catch(() => undefined)
-  if (stat === undefined || stat.kind !== 'file' || stat.size === transcriptSize || stat.size > MAX_READ) return
-  const text = await $.fs.read(path).catch(() => undefined)
+  if (stat === undefined || stat.kind !== 'file' || stat.size === transcriptSize) return
+  const text = await readTail($, path, stat.size)
   if (text === undefined || path !== transcriptPath) return
   transcriptSize = stat.size
   const ttl = lastTtl(text)
   if (ttl === null) return
   const cached = await read($, cache)
   if (observeTtl(cached, ttl) !== cached) await update($, cache, state => observeTtl(state, ttl))
+  if (cached.observedTtl !== ttl) await $.store.set(STORED_TTL, ttl).catch(() => {})
+}
+
+/** This session's subscription reading: into the cache, and stored for the next session when it changed. */
+async function readSubscriptionOf ($: EngineInterface, isSubscription: boolean) {
+  const cached = await read($, cache)
+  // Rate limits once seen this session stand, even if a later read has none.
+  if (!isSubscription && cached.isSubscriptionKnown === true && cached.isSubscription) return
+  if (readSubscription(cached, isSubscription) === cached) return
+  await update($, cache, state => readSubscription(state, isSubscription))
+  await $.store.set(STORED_SUBSCRIPTION, isSubscription).catch(() => {})
+}
+
+/** What earlier sessions stored: the cache takes it as inference (see `seed`). */
+async function seedFromStore ($: EngineInterface) {
+  const [ttl, isSubscription] = await Promise.all([
+    $.store.get(STORED_TTL).catch(() => undefined),
+    $.store.get(STORED_SUBSCRIPTION).catch(() => undefined),
+  ])
+  const cached = await read($, cache)
+  if (seed(cached, { ttl, isSubscription }) !== cached) await update($, cache, state => seed(state, { ttl, isSubscription }))
 }
 
 /** The recordings of main-thread responses, one after another. */
@@ -186,13 +221,15 @@ const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(w
 /** A main-thread response: its counts become the last request and add to the session; the cache checks it for a loss. */
 async function record ($: EngineInterface, usage: TurnUsage) {
   const [{ startedAt, cost: spent, rateLimits }, now] = await Promise.all([$.session.usage(), $.clock.now()])
+  const before = since(await read($, ledger), startedAt)
   await update($, ledger, state => add(since(state, startedAt), usage, now))
   await update($, cache, state => observe(cacheSince(state, startedAt), usage, now, rateLimits.length > 0, ttlSetting))
   hasCache = true
   if (rateLimits.length > 0) isSubscriptionSeen = true
+  // Rate limits say a subscription; none by a second response say an API key (the first may come
+  // before the host has any).
+  if (rateLimits.length > 0 || before.requests > 0) await readSubscriptionOf($, rateLimits.length > 0)
   await showCost($, spent)
-  // The response may not be in the transcript yet: then the one before it is read, and the turn's end reads again.
-  await readTranscript($)
 }
 
 /**
@@ -202,7 +239,7 @@ async function record ($: EngineInterface, usage: TurnUsage) {
 function seeRateLimits ($: EngineInterface, rateLimits: readonly unknown[]) {
   if (rateLimits.length === 0 || isSubscriptionSeen) return
   isSubscriptionSeen = true
-  enqueue(() => update($, cache, state => (state.isSubscription ? state : { ...state, isSubscription: true })))
+  enqueue(() => readSubscriptionOf($, true))
 }
 
 /** Everything the card shows; `now` is the time the countdown is drawn for, the tick's unless given. */
@@ -279,6 +316,7 @@ export const register: Register = (on, options) => {
     isCompactAtStale = true
     const usage = await $.session.usage()
     await keepSession($, usage.startedAt)
+    await seedFromStore($)
     await showCost($, usage.cost)
     await sync($, usage.context, false)
     startTimer($)
@@ -295,9 +333,9 @@ export const register: Register = (on, options) => {
       await update($, ledger, () => EMPTY)
       enqueue(async () => {
         const now = await $.clock.now()
-        await update($, cache, () => cleared(now))
+        // The TTL setting and the billing do not change with /clear: those readings are kept.
+        await update($, cache, state => cleared(now, state))
         hasCache = false
-        isSubscriptionSeen = false
       })
     } else {
       stopTimers()

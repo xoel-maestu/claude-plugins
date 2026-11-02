@@ -813,9 +813,12 @@ const entry = (m5: number, h1: number, extra: Record<string, unknown> = {}) => J
   message: { usage: { cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } } },
   ...extra,
 })
-/** A transcript beneath the mod: its lines, how often it was read, and a size the stat may report instead. */
+/**
+ * A transcript beneath the mod: its lines, how often it was read whole and by `tail`, a size the stat
+ * may report instead, and whether `tail` runs (false: it cannot start, as on Windows).
+ */
 function transcript (on: On) {
-  const file = { lines: [] as string[], reads: 0, size: undefined as number | undefined }
+  const file = { lines: [] as string[], reads: 0, tails: 0, size: undefined as number | undefined, hasTail: true, argv: [] as readonly string[] }
   const text = () => file.lines.map(line => line + '\n').join('')
   on('fs.stat', ($, e) => (e.path === TRANSCRIPT
     ? { value: { kind: 'file', size: file.size ?? text().length, mtimeMs: 0, isLink: false } }
@@ -828,6 +831,14 @@ function transcript (on: On) {
     if (e.path !== TRANSCRIPT) throw new Error('ENOENT')
     file.reads += 1
     return { value: text() } as never
+  })
+  on('process.run', ($, e) => {
+    file.argv = e.argv
+    if (!file.hasTail) throw new Error('ENOENT: tail')
+    file.tails += 1
+    const all = text()
+    const cut = Number(e.argv[2])
+    return { value: { exitCode: 0, stdout: all.slice(Math.max(0, all.length - cut)), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } as never
   })
   return file
 }
@@ -843,15 +854,18 @@ test('the TTL the transcript records for the last main-thread write is shown wit
   await startWithTranscript($)
   file.lines.push(entry(0, 50_000))
   await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
   // No rate limits: the inference would say 5m?; the transcript says 1h.
   expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h)`)
   // A pure read keeps it; a subagent's 5m write in the file changes nothing.
   file.lines.push(entry(0, 0), entry(9000, 0, { isSidechain: true }), 'not json')
   await respond($, w, counts(5, 50_000, 0, 10))
+  await stop($)
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
   // A later 5m write (usage credits, say) turns it 5m.
   file.lines.push(entry(800, 0))
   await respond($, w, counts(5, 50_000, 800, 10))
+  await stop($)
   expect((await cacheLines($))[0]).toMatch(/TTL 5m\)$/)
 })
 
@@ -866,24 +880,94 @@ test('the end of a turn reads the transcript, for a response written after its s
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
 })
 
-test('the transcript is read again only when its size changed, and never past 4 MiB', async ($, on) => {
+test('the transcript is read once per turn, at its end, and again only when its size changed', async ($, on) => {
   const w = world(on, fill(62))
   const file = transcript(on)
   await startWithTranscript($)
   file.lines.push(entry(0, 50_000))
   await respond($, w, counts(5, 0, 50_000, 10))
-  await stop($)
-  // /context-meter waits for the queued reads.
+  await respond($, w, counts(5, 50_000, 0, 10))
   await runCommand($)
+  // Not after each request: only the turn's end reads.
+  expect(file.tails).toBe(0)
+  await stop($)
+  await stop($)
+  await runCommand($)
+  expect(file.tails).toBe(1)
+  expect(file.reads).toBe(0)
+  // The path is one argv element, no shell.
+  expect(file.argv).toEqual(['tail', '-c', String(256 * 1024), TRANSCRIPT])
+})
+
+test('past 4 MiB the tail still reads the TTL, its first cut line dropped', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  file.size = 50 * 1024 * 1024
+  // A line far longer than the tail, cut at its start, then the last write.
+  file.lines.push(entry(9000, 0, { pad: 'x'.repeat(300 * 1024) }).slice(0, -1) + '}', entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+  expect(file.reads).toBe(0)
+})
+
+test('without tail the whole file is read, up to 4 MiB; past it the TTL last observed stands', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  file.hasTail = false
+  await startWithTranscript($)
+  file.lines.push(entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
   expect(file.reads).toBe(1)
   file.size = 4 * 1024 * 1024 + 1
   file.lines.push(entry(800, 0))
   await respond($, w, counts(5, 50_000, 800, 10))
   await stop($)
-  await runCommand($)
-  expect(file.reads).toBe(1)
-  // The TTL last observed stands.
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+  expect(file.reads).toBe(1)
+})
+
+test('/clear keeps the observed TTL and the subscription reading', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  w.live.cost = { usd: 0.004 }
+  await startWithTranscript($)
+  file.lines.push(entry(800, 0))
+  await respond($, w, counts(5, 0, 800, 10))
+  await stop($)
+  await $.session.end({ reason: 'clear' } as never)
+  w.live.startedAt = 10
+  w.live.rateLimits = []
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 5m\)$/)
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+})
+
+test('a new session starts from the stored TTL (inferred) and subscription', async ($, on) => {
+  const stored: Record<string, unknown> = { lastTtl: '1h', isSubscription: true }
+  on('store.get', ($, e) => ({ value: stored[(e as { key: string }).key] }) as never)
+  on('store.set', ($, e) => { const { key, value } = e as { key: string; value: unknown }; stored[key] = value; return { value: undefined } as never })
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  w.live.cost = { usd: 0.004 }
+  await startWithTranscript($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  // No rate limits yet: the stored reading stands; the stored TTL is the inference.
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+  // This session's transcript confirms a TTL; it is stored.
+  file.lines.push(entry(800, 0))
+  await stop($)
+  expect((await cacheLines($))[0]).toMatch(/TTL 5m\)$/)
+  expect(stored.lastTtl).toBe('5m')
+  // A second response still without rate limits is this session's own reading: an API key.
+  await respond($, w, counts(5, 800, 0, 10))
+  expect((await tokenLines($)).at(-1)).toMatch(/at list prices/)
+  expect(stored.isSubscription).toBe(false)
 })
 
 test('an explicit cacheTtl beats the observed TTL', { options: { cacheTtl: '5m' } }, async ($, on) => {
@@ -892,6 +976,7 @@ test('an explicit cacheTtl beats the observed TTL', { options: { cacheTtl: '5m' 
   await startWithTranscript($)
   file.lines.push(entry(0, 50_000))
   await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
   expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`)
 })
 
@@ -902,6 +987,8 @@ test("a subagent's classic event does not move the transcript path", async ($, o
   await $.classic.UserPromptSubmit({ prompt: 'synthetic', transcript_path: '/synthetic/other.jsonl', agent_id: 'a1' } as never)
   file.lines.push(entry(0, 50_000))
   await respond($, w, counts(5, 0, 50_000, 10))
+  // A Stop without a path keeps the one it has.
+  await $.classic.Stop({ stop_hook_active: false } as never)
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
 })
 
