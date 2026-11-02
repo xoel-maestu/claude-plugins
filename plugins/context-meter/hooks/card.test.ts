@@ -147,6 +147,12 @@ test('the cost row takes its short scope where the full one does not fit', () =>
   expect(trimmed(cardOf(view, 'en', 47)).at(-1)).toBe('Cost           $1234.50 (all agents)')
 })
 
+test('a cost under a cent reads <$0.01, not $0.00', () => {
+  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           <$0.01 (session, all agents)')
+  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'es', 115)).at(-1)).toBe('Coste               <$0.01 (sesión, todos los agentes)')
+  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.01 }, 'en', 115)).at(-1)).toBe('Cost           $0.01 (session, all agents)')
+})
+
 test('a cost of zero (a subscription) or none gives no cost row', () => {
   for (const cost of [0, null, undefined]) {
     const rows = trimmed(cardOf({ ...WITH_TOKENS, cost }, 'en', 115))
