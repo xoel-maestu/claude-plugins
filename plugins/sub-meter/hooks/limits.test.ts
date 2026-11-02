@@ -1,7 +1,7 @@
 // Pure logic, run with `claude plugin test .`: no engine involved. Every figure is synthetic.
 import { expect, test } from 'claude-code/testing'
 
-import { newer, percentAt, readingOf, resetIn, shown, until, windowsOf } from './limits'
+import { isStale, newer, percentAt, readingOf, resetIn, shown, until, windowsOf } from './limits'
 
 const HOUR = 3_600_000
 const at = (ms: number) => new Date(ms).toISOString()
@@ -61,4 +61,13 @@ test('rotate, both, session and week; a single window shows in every mode', () =
   expect(shown([five, week], 'week', 0)).toEqual([week])
   expect(shown([week], 'session', 0)).toEqual([week])
   expect(shown([five], 'week', 0)).toEqual([five])
+})
+
+test('a reading is stale once every window is past its reset; one without a reset time never is', () => {
+  const reading = { windows: [five, week], at: 0, origin: 0 }
+  expect(isStale(null, 0)).toBe(false)
+  expect(isStale(reading, 10 * HOUR)).toBe(false)
+  expect(isStale(reading, 90 * HOUR)).toBe(true)
+  expect(isStale({ ...reading, windows: [five] }, 10 * HOUR)).toBe(true)
+  expect(isStale({ ...reading, windows: [five, { kind: 'seven_day', percentUsed: 12 }] }, 99 * HOUR)).toBe(false)
 })

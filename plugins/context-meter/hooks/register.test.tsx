@@ -1144,3 +1144,32 @@ test('counts what is beneath, without what is hidden or out of the flow', async 
   expect((await row(await footer($, 66))).slice(0, 6)).toEqual(['ctx ', '━━━━', '── ', '62%', ' · ', '⏵ other'])
   expect((await row(await footer($, 65))).slice(0, 4)).toEqual(['ctx ', '62%', ' · ', '⏵ other'])
 })
+
+// sub-meter's reading as it keeps it in `$.state`: its 5-hour window resets at 1h, or reset a minute
+// before the clock's start. An inline plugin runs in an environment of its own, so each is literal.
+const liveReading: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.state.set({ plugin: 'sub-meter', key: 'reading' } as never, { windows: [{ kind: 'five_hour', percentUsed: 31, resetsAt: new Date(3_600_000).toISOString() }], at: 0, origin: 0 } as never)
+    return next(e)
+  })
+}
+const staleReading: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.state.set({ plugin: 'sub-meter', key: 'reading' } as never, { windows: [{ kind: 'five_hour', percentUsed: 31, resetsAt: new Date(-60_000).toISOString() }], at: 0, origin: 0 } as never)
+    return next(e)
+  })
+}
+
+test('room is kept for sub-meter while its reading holds', { plugins: [{ name: 'sub-meter', tier: 'prepend', register: liveReading }] }, async ($, on) => {
+  world(on, fill(62))
+  await startSession($)
+  await hint($, '? for shortcuts')
+  expect((await row(await footer($, 66))).join('')).toBe('ctx 62%')
+})
+
+test('no room is kept for a sub-meter reading past its reset, which sub-meter does not draw', { plugins: [{ name: 'sub-meter', tier: 'prepend', register: staleReading }] }, async ($, on) => {
+  world(on, fill(62))
+  await startSession($)
+  await hint($, '? for shortcuts')
+  expect((await row(await footer($, 66))).join('')).toBe('ctx ━━━━── 62%')
+})

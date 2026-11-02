@@ -33,6 +33,8 @@ declare module 'claude-code' {
       turn: number
       /** Bumped every 8 s, so the countdown is drawn again. */
       tick: number
+      /** The time the hover card is drawn for: written only when its text changes. */
+      now: number
     }
   }
 }

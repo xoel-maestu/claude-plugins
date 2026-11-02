@@ -36,6 +36,8 @@ Session        200.5k   165.9k       1.2k
 
 The headers always show. On a band too narrow for even Input, Cache read and Output (under about 47 columns) the table, the hit row and the cost row are left out; numbers are never cut. The cache rows stay, cut at the border where they run long.
 
+Its companion [sub-meter](../sub-meter) replaces the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude): both are named `sub-meter` and register `/sub-meter`, so install one or the other, not both.
+
 ## Install
 
 ```
@@ -53,7 +55,7 @@ The headers always show. On a band too narrow for even Input, Cache read and Out
 - **Cache** and **Cache losses**: see below.
 - The counts live in `$.state` (`ledger`), so a reload of the plugin keeps them. They count from the session's start (`$.session.usage().startedAt`): `/clear` empties them, and a ledger written for another start is dropped.
 - Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most. Hidden and out-of-flow nodes beneath take no room.
-- Beside [sub-meter](../sub-meter) the meter comes first (`ctx … · 5h … · <modes>`) whichever plugin wraps the other, and keeps its bar only while the row also holds a separator and sub-meter's least form (8 columns). It reads sub-meter's `$.state` (`reading`, `hides`) to know sub-meter draws and which hint parts it drops; see [sub-meter's README](../sub-meter/README.md#beside-context-meter).
+- Beside [sub-meter](../sub-meter) the meter comes first (`ctx … · 5h … · <modes>`) whichever plugin wraps the other, and keeps its bar only while the row also holds a separator and sub-meter's least form (8 columns). It reads sub-meter's `$.state` (`reading`, `hides`) to know sub-meter draws (a reading with a window not past its reset) and which hint parts it drops; see [sub-meter's README](../sub-meter/README.md#beside-context-meter).
 
 ## Options (`/config`)
 
@@ -118,7 +120,9 @@ claude plugin test plugins/context-meter
 
 `tsc -p` reads `.claude-plugin/types/`, which the engine writes when it loads the folder with `--plugin-dir`.
 
-Inspired by the `SessionMode` pattern of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
+## Credits
+
+Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
 
 ## License
 

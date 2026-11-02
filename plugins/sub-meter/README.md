@@ -1,6 +1,6 @@
 # sub-meter
 
-Subscription usage at the bottom right of the Claude Code prompt footer: the 5-hour and weekly windows.
+Subscription usage at the bottom right of the Claude Code prompt footer: the 5-hour and weekly windows, with a hover card that adds the reset times, the pace and how old the reading is.
 
 ```
 5h ━━━─────── 31% ↻ 2h 10m
@@ -12,12 +12,20 @@ Beside [context-meter](../context-meter), the context meter comes first:
 ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m
 ```
 
-`/sub-meter` prints the windows as text:
+With the pointer on the meter, a card opens in the band above the prompt, at its right end:
 
 ```
-5h      31%   resets in 2h 10m
-week    12%   resets in 3d 18h
+Subscription
+5h      ━━━━━━━━━━━━━━──────  68%   resets 04:40 (in 2h 10m)
+Week    ━━──────────────────  12%   resets Thu 21:00 (in 3d 18h)
+Pace    at this pace, 5h reaches 100% at 03:50
+        at this pace, the week won't reach 100% before reset
+Read    <1m ago (another session)
 ```
+
+`/sub-meter` prints the same rows as text, for a terminal without mouse reporting.
+
+This sub-meter replaces the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude): both are named `sub-meter` and register `/sub-meter`, so install one or the other, not both.
 
 ## Install
 
@@ -38,10 +46,26 @@ Parity with the sub-meter of [midudev/better-claude](https://github.com/midudev/
 - [x] No subscription (no rate limits): draws nothing and passes the row on. Test: `no subscription…`.
 - [x] Narrow footer: gives up the bar, then the reset time, then itself; never a second line. What is beneath that is hidden or placed out of the flow takes no room. Tests: `a narrow footer gives up…`, `counts what is beneath…`, `gives up the bar, then the reset time, then itself`. Manual: at 80 columns, no wrap.
 - [x] Labels `5h` and `week` (Spanish, `language: es`: `5h` and `semana`). Test: `labels in Spanish…`.
-- [x] `/sub-meter` prints the windows as text. Tests: `/sub-meter prints the windows`, `/sub-meter in Spanish…`, `/sub-meter without a subscription…`.
+- [x] `/sub-meter` prints the card as text. Tests: `/sub-meter prints the card as text`, `/sub-meter in Spanish…`, `/sub-meter without a subscription…`.
 - [ ] Manual, real session: with `sub-meter@better-claude` off, the figures match what it showed and the status line.
 
-The hint parts are dropped whether or not the session has a subscription, as in the original. The hover card is for a later version.
+The hint parts are dropped whether or not the session has a subscription, as in the original.
+
+Beyond the original:
+
+- A reading whose windows are all past their reset is not drawn, nor taken from the store, and leaves `$.state`, so context-meter keeps no room for it. Tests: `a reading with every window past its reset…`, `a stored reading past its reset…`.
+- A session that had two main-thread responses (steps without an `agentId`, with token counts) without the two windows, before it ever had them (it is on an API key, say), hides the reading in that session only and takes none from the store for the rest of it; `$.store` is left alone, since other sessions may be on a subscription. `rateLimits` is empty before the first reading too, so a fill alone (a resumed session, before any response) or a single response changes nothing. Once the session had rate limits, a later measure without them changes nothing. Tests: `a resumed session with a fill…`, `two main-thread responses without rate limits…`, `a subscription whose rate limits arrive…`, `once this session had rate limits…`.
+
+## The card
+
+- **5h** and **Week** (Spanish **5h**, **Semana**): a 20-cell bar in the theme's `claude` color (`warning` from 75%, `error` from 90%, the empty cells dim), the percentage, and the reset as a local time, with the weekday when it is not today, and the time left (`se reinicia a las 04:40 (en 2h 10m)`, `el jue a las 21:00`). A window past its reset shows 0% and `reset` (`reiniciada`).
+- **Pace** (**Ritmo**), from `hooks/pace.ts`, one row per window that has one: the window has run `elapsed = duration − (reset − now)` (5 h, 7 days); with `elapsed` under 10 minutes or 0% there is no row. At the pace so far (`percent / elapsed`) the window reaches 100% at `now + (100 − percent) / pace`: `at this pace, 5h reaches 100% at 03:55` (`a este ritmo, 5h llega al 100% a las 03:55`), with the weekday when not today; at or after the reset, `… won't reach 100% before reset` (`… no llega al 100% antes del reinicio`); at 100% or more, `5h is already at 100%` (`5h ya está al 100%`), without the pace prefix. Both windows get a row: each is short, and the band has the rows.
+- **Read** (**Leído**): how long ago the reading was taken and whether by this session or another (`<1m ago (another session)`, `hace 3m (esta sesión)`), in whole minutes.
+- The labels dim, the rest plain, in a rounded dim border.
+- A narrow band: the bars give up to half their cells, then the reset tails shorten to `↻ 04:40`, then go, then the bars go; a pace or read row drops its opening (`at this pace, `, `(another session)`), then goes. No word or number is cut and no row wraps.
+- Every text in the card changes at most once a minute. The 8 s tick works the card out and writes the time it is drawn for (`$.state` `now`) only when the text changes, so the band redraws only then.
+
+It is drawn as context-meter draws its card (see its README, "How the card is drawn"): the meter's Box joins the hover group `sub-meter` (`hover={{ scope: 'sub-meter' }}`), and the card is drawn in `AbovePrompt` after what is beneath it (`next(e)`, kept whole: the engine's node, context-meter's card), in a holder as wide as the band, `justifyContent="flex-end"`, `display="none"` and `hover={{ scope: 'sub-meter', display: 'flex' }}`. The two plugins' groups differ, so each card opens with its own meter. With no reading to show, or while a survey holds the band, the band is passed on as it came. Tests: `the hover card, in the band…`, `beside context-meter's card…` (both orders).
 
 ## Beside context-meter
 
@@ -87,7 +111,9 @@ claude plugin test plugins/sub-meter
 
 `tsc -p` reads `.claude-plugin/types/`, which the engine writes when it loads the folder with `--plugin-dir`.
 
-Behaviour modelled on the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
+## Credits
+
+Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
 
 ## License
 

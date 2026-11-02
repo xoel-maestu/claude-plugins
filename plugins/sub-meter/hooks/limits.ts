@@ -29,6 +29,10 @@ export function percentAt (window: SubMeterWindow, now: number): number {
   return isPast ? 0 : window.percentUsed
 }
 
+/** Whether every window of the reading is past its reset: nothing it says holds any more. */
+export const isStale = (reading: SubMeterReading, now: number): boolean =>
+  reading !== null && reading.windows.every(w => w.resetsAt !== undefined && resetIn(w, now) === undefined)
+
 /** `42m`, `3h 5m`, `2d 4h`: a time left, at least a minute. */
 export function until (ms: number): string {
   const minutes = Math.max(1, Math.round(ms / 60_000))
