@@ -1,0 +1,23 @@
+# Changelog
+
+## 1.0.0 (2026-11-02)
+
+First public release of both plugins in the `xoel-plugins` marketplace.
+
+### context-meter
+
+- Context window fill at the bottom right of the prompt footer, with a bar and a percentage colored by the `warnAt` and `dangerAt` thresholds.
+- An estimate, marked with `~`, before the first response of a fresh, resumed, compacted or rewound session.
+- A hover card in the band above the prompt, and `/context-meter` to print it as text: tokens over the window, the autocompact point, the main thread's last request and session totals (input, cache read, cache write, uncached, output), the cache hit rate and the session cost at API list prices.
+- Prompt cache tracking: the expiry countdown, the TTL read from the session transcript (or set with `cacheTtl`), and a history of cache losses with their cause.
+- Narrow layouts: the meter and the card shrink without wrapping or cutting numbers.
+- English and Spanish (`language`).
+
+### sub-meter
+
+- The 5-hour and weekly subscription windows at the bottom right of the prompt footer, with a bar, the percentage and the time to reset; `display` shows them in turn, side by side or one only.
+- A hover card in the band above the prompt, and `/sub-meter` to print it as text: reset times, pace projections and the age of the reading.
+- The reading is shared between open sessions through the plugin store.
+- Hides without a subscription; optionally drops `(shift+tab to cycle)` and `esc to interrupt` from the hint line to make room.
+- Shares the footer row with context-meter in a fixed order.
+- English and Spanish (`language`).
