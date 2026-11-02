@@ -1,7 +1,7 @@
 // Pure logic, run with `claude plugin test .`: synthetic figures only.
 import { expect, test } from 'claude-code/testing'
 
-import { cardOf, cardText, tokens } from './card'
+import { cacheStatus, cardOf, cardText, clockTime, countdown, span, tokens } from './card'
 import type { Card } from './card'
 
 test('token counts use k and M with one decimal, dropping a trailing .0', () => {
@@ -83,75 +83,74 @@ const WITH_TOKENS = { fill: FILL, compactAt: 167_000, ledger: LEDGER, cost: 4.12
 const CONTEXT_ROWS = ['Context   124.3k / 200k   62%']
 const trimmed = (card: Card | null) => lines(card).map(line => line.trimEnd())
 
-test('with requests the card adds the last one, the session and the hit rate, as wide as they need', () => {
+// Input is cache read, cache write and uncached: 124.3k for the last request, 2.3M for the session.
+const TABLE = [
+  '               Input    Cache read   Cache write   Uncached   Output',
+  'Last request   124.3k   118k         5.1k          1.2k       2.4k',
+  'Session        2.3M     2.1M         160k          31k        88k',
+  'Cache hit      92% of input read from cache',
+  'Cost           $4.12 (session, all agents)',
+]
+
+test('with requests the card adds the token table, the hit rate and the cost, as wide as they need', () => {
   const card = cardOf(WITH_TOKENS, 'en', 115)!
-  expect(card.content).toBe(70)
-  expect(card.width).toBe(74)
-  expect(trimmed(card)).toEqual([
-    ...CONTEXT_ROWS,
-    '━'.repeat(43) + '─'.repeat(27),
-    'Autocompact at ~167k',
-    'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
-    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
-    'Cache hit      92%',
-    'Cost           $4.12 (session, all agents)',
-  ])
-  expect(lines(card).every(line => line.length === 70)).toBe(true)
-  expect(card.height).toBe(9)
+  expect(card.content).toBe(68)
+  expect(card.width).toBe(72)
+  expect(trimmed(card)).toEqual([...CONTEXT_ROWS, '━'.repeat(42) + '─'.repeat(26), 'Autocompact at ~167k', ...TABLE])
+  expect(lines(card).every(line => line.length === 68)).toBe(true)
+  expect(card.height).toBe(10)
 })
 
-test('the token rows: labels plain, the names of the counts dim, the figures plain', () => {
-  const last = cardOf(WITH_TOKENS, 'en', 115)!.rows[3]!
-  expect(last.slice(0, 3)).toEqual([
+test('the table: headers dim, labels and figures plain, each column as wide as its widest cell', () => {
+  const [header, last] = cardOf(WITH_TOKENS, 'en', 115)!.rows.slice(3)
+  expect(header!.slice(0, 3)).toEqual([
+    { text: ' '.repeat(15), tone: 'plain' },
+    { text: 'Input    ', tone: 'dim' },
+    { text: 'Cache read   ', tone: 'dim' },
+  ])
+  expect(last!.slice(0, 3)).toEqual([
     { text: 'Last request   ', tone: 'plain' },
-    { text: 'in ', tone: 'dim' },
-    // A figure carries the spaces up to the next column.
-    { text: '1.2k   ', tone: 'plain' },
+    { text: '124.3k   ', tone: 'plain' },
+    { text: '118k         ', tone: 'plain' },
   ])
 })
 
-test('where the full rows do not fit, each splits in two, then the names shorten; nothing wraps', () => {
+test('where the band is narrow, Uncached goes first, then Cache write; nothing wraps', () => {
+  // 68 inside the border needs 72; at 70 Uncached goes.
+  const four = cardOf(WITH_TOKENS, 'en', 70)!
+  expect(trimmed(four).slice(3, 6)).toEqual([
+    '               Input    Cache read   Cache write   Output',
+    'Last request   124.3k   118k         5.1k          2.4k',
+    'Session        2.3M     2.1M         160k          88k',
+  ])
   // 60 columns: a band of 55, 51 inside the border.
-  const split = cardOf(WITH_TOKENS, 'en', 55)!
-  expect(split.width).toBe(53)
-  expect(trimmed(split).slice(3)).toEqual([
-    'Last request   in 1.2k   out 2.4k',
-    '               cache read 118k   cache write 5.1k',
-    'Session        in 31k    out 88k',
-    '               cache read 2.1M   cache write 160k',
-    'Cache hit      92%',
+  const three = cardOf(WITH_TOKENS, 'en', 55)!
+  expect(three.width).toBe(47)
+  expect(trimmed(three).slice(3)).toEqual([
+    '               Input    Cache read   Output',
+    'Last request   124.3k   118k         2.4k',
+    'Session        2.3M     2.1M         88k',
+    'Cache hit      92% of input read from cache',
     'Cost           $4.12 (session, all agents)',
   ])
-  expect(lines(split).every(line => line.length === split.content)).toBe(true)
+  expect(lines(three).every(line => line.length === three.content)).toBe(true)
 
-  const short = cardOf(WITH_TOKENS, 'en', 44)!
-  expect(short.width).toBe(42)
-  expect(trimmed(short).slice(3)).toEqual([
-    'Last        in 1.2k   out 2.4k',
-    '            c.read 118k   c.write 5.1k',
-    'Session     in 31k    out 88k',
-    '            c.read 2.1M   c.write 160k',
-    'Cache hit   92%',
-    'Cost        $4.12 (all agents)',
-  ])
-
-  // Narrower still: no form fits, so the token rows (and the cost) are left out, no number cut.
-  const cut = cardOf(WITH_TOKENS, 'en', 30)!
-  expect(cut.width).toBe(30)
-  expect(lines(cut).every(line => line.length === 26)).toBe(true)
-  expect(trimmed(cut)).toEqual(['Context   124.3k / 200k', '━'.repeat(16) + '─'.repeat(10), 'Autocompact at ~167k'])
+  // Narrower still: no layout fits, so the table, the hit rate and the cost are left out, no number cut.
+  const cut = cardOf(WITH_TOKENS, 'en', 44)!
+  expect(cut.width).toBe(40)
+  expect(trimmed(cut)).toEqual(['Context   124.3k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompact at ~167k'])
 })
 
-test('the cost row takes its short scope where the full one does not fit, and is left out where neither does', () => {
+test('the cost row takes its short scope where the full one does not fit', () => {
   const view = { ...WITH_TOKENS, cost: 1234.5 }
-  // 40 inside the border: the short token form, the cost scope shortened.
-  expect(trimmed(cardOf(view, 'en', 44)).at(-1)).toBe('Cost        $1234.50 (all agents)')
+  // 43 inside the border: the three-column table, the cost scope shortened.
+  expect(trimmed(cardOf(view, 'en', 47)).at(-1)).toBe('Cost           $1234.50 (all agents)')
 })
 
 test('a cost of zero (a subscription) or none gives no cost row', () => {
   for (const cost of [0, null, undefined]) {
     const rows = trimmed(cardOf({ ...WITH_TOKENS, cost }, 'en', 115))
-    expect(rows.at(-1)).toBe('Cache hit      92%')
+    expect(rows.at(-1)).toBe('Cache hit      92% of input read from cache')
     expect(rows.some(line => line.includes('$'))).toBe(false)
   }
 })
@@ -162,33 +161,100 @@ test('no request yet: no token rows, no zeros', () => {
   expect(trimmed(card)).toHaveLength(3)
 })
 
-test('without a cost the session row ends at its counts; with nothing sent there is no hit rate', () => {
-  const noCost = trimmed(cardOf({ ...WITH_TOKENS, cost: null }, 'en', 115))
-  expect(noCost[4]).toBe('Session        in 31k    cache read 2.1M   cache write 160k   out 88k')
+test('with nothing sent there is no hit rate', () => {
   const zero = { input: 0, output: 10, cacheRead: 0, cacheWrite: 0 }
   const noHit = trimmed(cardOf({ ...WITH_TOKENS, ledger: { last: { ...zero, model: 'model-a', at: 1 }, total: zero, requests: 1 } }, 'en', 115))
   expect(noHit.some(line => line.startsWith('Cache hit'))).toBe(false)
-  expect(noHit.slice(-2)).toEqual(['Session        in 0   cache read 0   cache write 0   out 10', 'Cost           $4.12 (session, all agents)'])
+  expect(noHit.slice(-2)).toEqual(['Session        0       0            0             0          10', 'Cost           $4.12 (session, all agents)'])
 })
 
-test('the token rows in Spanish', () => {
+test('the token table in Spanish', () => {
   expect(trimmed(cardOf(WITH_TOKENS, 'es', 115)).slice(3)).toEqual([
-    'Última petición    entrada 1.2k   caché leída 118k   caché escrita 5.1k   salida 2.4k',
-    'Sesión             entrada 31k    caché leída 2.1M   caché escrita 160k   salida 88k',
-    'Acierto de caché   92%',
-    'Coste              $4.12 (sesión, todos los agentes)',
+    '                    Entrada   Caché leída   Caché escrita   Sin caché   Salida',
+    'Última petición     124.3k    118k          5.1k            1.2k        2.4k',
+    'Sesión              2.3M      2.1M          160k            31k         88k',
+    'Acierto de caché    92% de la entrada leída de caché',
+    'Coste               $4.12 (sesión, todos los agentes)',
   ])
-  expect(trimmed(cardOf(WITH_TOKENS, 'es', 44)).slice(3, 5)).toEqual([
-    'Última    ent. 1.2k   sal. 2.4k',
-    '          c.leída 118k   c.escrita 5.1k',
+  expect(trimmed(cardOf(WITH_TOKENS, 'es', 55)).slice(3, 4)).toEqual(['                    Entrada   Caché leída   Salida'])
+})
+
+test('as text the table comes whole, at its widest', () => {
+  expect(cardText(WITH_TOKENS, 'en').split('\n').slice(3)).toEqual(TABLE)
+})
+
+const MIN = 60_000
+const HOUR = 60 * MIN
+const CACHE = {
+  startedAt: 0,
+  last: { prefix: 120_000, model: 'model-a', at: 0 },
+  isCompactPending: false,
+  isSubscription: true,
+  isLongSeen: false,
+  losses: [
+    { at: 140 * MIN, lost: 112_000, cause: 'expired' as const, gap: 67 * MIN },
+    { at: 62 * MIN, lost: 98_000, cause: 'compact' as const, gap: MIN },
+    { at: 40 * MIN, lost: 50_000, cause: 'model' as const, gap: MIN },
+    { at: 10 * MIN, lost: 20_000, cause: 'invalidated' as const, gap: MIN },
+  ],
+}
+const WITH_CACHE = { ...WITH_TOKENS, cache: CACHE, ttl: HOUR, now: 18 * MIN + 50_000 }
+
+test('countdowns in mm:ss or h:mm:ss, rounded up; pauses in s, m or h with minutes', () => {
+  expect(countdown(41 * MIN + 10_000)).toBe('41:10')
+  expect(countdown(41 * MIN + 9_001)).toBe('41:10')
+  expect(countdown(HOUR)).toBe('1:00:00')
+  expect(countdown(30_000)).toBe('00:30')
+  expect(span(45_000)).toBe('45s')
+  expect(span(7 * MIN + 59_000)).toBe('7m')
+  expect(span(67 * MIN)).toBe('1h07m')
+})
+
+test('the cache line: active with the time left and the TTL, expired, or no cache yet', () => {
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'en')).toBe('active, expires in 41:10 (TTL 1h)')
+  expect(cacheStatus(CACHE, 5 * MIN, 8 * MIN, 'en')).toBe('expired 3m ago')
+  expect(cacheStatus({ ...CACHE, last: undefined }, HOUR, 0, 'en')).toBe('no cache yet')
+  expect(cacheStatus(CACHE, HOUR, 18 * MIN + 50_000, 'es')).toBe('activa, expira en 41:10 (TTL 1h)')
+  expect(cacheStatus(CACHE, 5 * MIN, 8 * MIN, 'es')).toBe('caducada hace 3m')
+  expect(cacheStatus({ ...CACHE, last: undefined }, HOUR, 0, 'es')).toBe('sin caché todavía')
+})
+
+test('the cache rows after the table: the status, then the losses newest first, each cause said', () => {
+  expect(trimmed(cardOf(WITH_CACHE, 'en', 115)).slice(8)).toEqual([
+    'Cache          active, expires in 41:10 (TTL 1h)',
+    `Cache losses   ${clockTime(140 * MIN)}  −112k  idle 1h07m > TTL`,
+    `               ${clockTime(62 * MIN)}  −98k   /compact`,
+    `               ${clockTime(40 * MIN)}  −50k   model changed`,
+    `               ${clockTime(10 * MIN)}  −20k   invalidated (prompt or tools changed)`,
+  ])
+  expect(trimmed(cardOf(WITH_CACHE, 'es', 115)).slice(8)).toEqual([
+    'Caché               activa, expira en 41:10 (TTL 1h)',
+    `Pérdidas de caché   ${clockTime(140 * MIN)}  −112k  inactiva 1h07m > TTL`,
+    `                    ${clockTime(62 * MIN)}  −98k   /compact`,
+    `                    ${clockTime(40 * MIN)}  −50k   cambio de modelo`,
+    `                    ${clockTime(10 * MIN)}  −20k   invalidada (cambió el prompt o las herramientas)`,
   ])
 })
 
-test('as text the token rows come whole, at their widest', () => {
-  expect(cardText(WITH_TOKENS, 'en').split('\n').slice(3)).toEqual([
-    'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
-    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
-    'Cache hit      92%',
-    'Cost           $4.12 (session, all agents)',
+test('the card shows the 5 newest losses, the text all of them; a short band cuts the causes, not the figures', () => {
+  const many = { ...CACHE, losses: Array.from({ length: 10 }, (_, i) => ({ at: (10 - i) * MIN, lost: 10_000 + i, cause: 'invalidated' as const, gap: MIN })) }
+  const view = { ...WITH_CACHE, cache: many }
+  expect(trimmed(cardOf(view, 'en', 115)).filter(line => line.includes('−'))).toHaveLength(5)
+  expect(cardText(view, 'en').split('\n').filter(line => line.includes('−'))).toHaveLength(10)
+  const narrow = cardOf(WITH_CACHE, 'en', 55)!
+  expect(lines(narrow).every(line => line.length === narrow.content)).toBe(true)
+  expect(trimmed(narrow).at(-1)).toBe(`               ${clockTime(10 * MIN)}  −20k   invalidated (prompt or`)
+})
+
+test('no losses: a sentence; after /clear the marker comes first', () => {
+  const none = { ...WITH_CACHE, cache: { ...CACHE, losses: [] } }
+  expect(trimmed(cardOf(none, 'en', 115)).slice(8)).toEqual(['Cache          active, expires in 41:10 (TTL 1h)', 'No cache losses this session'])
+  expect(trimmed(cardOf(none, 'es', 115)).slice(8)).toEqual(['Caché               activa, expira en 41:10 (TTL 1h)', 'Sin pérdidas de caché en esta sesión'])
+  const afterClear = { ...WITH_CACHE, cache: { ...CACHE, clearedAt: 5 * MIN } }
+  expect(trimmed(cardOf(afterClear, 'en', 115)).slice(9, 11)).toEqual([
+    `Cache losses   Cleared at ${clockTime(5 * MIN)}`,
+    `               ${clockTime(140 * MIN)}  −112k  idle 1h07m > TTL`,
   ])
+  expect(trimmed(cardOf({ ...afterClear, cache: { ...CACHE, losses: [], clearedAt: 5 * MIN } }, 'es', 115)).slice(9))
+    .toEqual([`Borrada a las ${clockTime(5 * MIN)}`, 'Sin pérdidas de caché en esta sesión'])
 })

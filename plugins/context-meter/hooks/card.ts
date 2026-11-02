@@ -1,5 +1,7 @@
 import type { ContextMeterFill } from '../types'
 
+import { FIVE_MINUTES, HISTORY, HOUR, statusOf } from './cache'
+import type { Cache, Loss } from './cache'
 import { split } from './fit'
 import { hitRate } from './ledger'
 import type { Counts, Ledger } from './ledger'
@@ -8,29 +10,87 @@ export type Language = 'en' | 'es'
 
 /** The card's width, border included, without token rows; with them it widens to what they need. */
 export const CARD_WIDTH = 40
+/** How many losses the card shows; /context-meter prints the whole history. */
+export const CARD_LOSSES = 5
 /** A border column and a padding column at each side. */
 const FRAME = 4
 const GAP = '   '
 
-/** Names of the token rows and counts: in full, and short for a narrow band. */
-type Names = { last: string; session: string; hit: string; cost: string; scope: string; input: string; cacheRead: string; cacheWrite: string; output: string }
+/** The table's columns: Input is cache read, cache write and uncached together. */
+type Column = 'input' | 'cacheRead' | 'cacheWrite' | 'uncached' | 'output'
+/** The table's columns, widest first: Uncached goes first where the band is narrow, then Cache write. */
+const LAYOUTS: Column[][] = [
+  ['input', 'cacheRead', 'cacheWrite', 'uncached', 'output'],
+  ['input', 'cacheRead', 'cacheWrite', 'output'],
+  ['input', 'cacheRead', 'output'],
+]
 
-const WORDS = {
+type Words = {
+  context: string
+  compact: string
+  none: string
+  last: string
+  session: string
+  hit: string
+  hitText: string
+  cost: string
+  scope: string
+  scopeShort: string
+  columns: Record<Column, string>
+  cache: string
+  losses: string
+  noLosses: string
+  clearedAt: string
+  active: (left: string, ttl: string) => string
+  expired: (ago: string) => string
+  noCache: string
+  causes: Record<Exclude<Loss['cause'], 'expired'>, string> & { expired: (gap: string) => string }
+}
+
+const WORDS: Record<Language, Words> = {
   en: {
     context: 'Context',
     compact: 'Autocompact at',
     none: 'No context figure yet.',
-    full: { last: 'Last request', session: 'Session', hit: 'Cache hit', cost: 'Cost', scope: '(session, all agents)', input: 'in', cacheRead: 'cache read', cacheWrite: 'cache write', output: 'out' },
-    short: { last: 'Last', session: 'Session', hit: 'Cache hit', cost: 'Cost', scope: '(all agents)', input: 'in', cacheRead: 'c.read', cacheWrite: 'c.write', output: 'out' },
+    last: 'Last request',
+    session: 'Session',
+    hit: 'Cache hit',
+    hitText: 'of input read from cache',
+    cost: 'Cost',
+    scope: '(session, all agents)',
+    scopeShort: '(all agents)',
+    columns: { input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output' },
+    cache: 'Cache',
+    losses: 'Cache losses',
+    noLosses: 'No cache losses this session',
+    clearedAt: 'Cleared at',
+    active: (left, ttl) => `active, expires in ${left} (TTL ${ttl})`,
+    expired: ago => `expired ${ago} ago`,
+    noCache: 'no cache yet',
+    causes: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap} > TTL`, invalidated: 'invalidated (prompt or tools changed)' },
   },
   es: {
     context: 'Contexto',
     compact: 'Autocompacta en',
     none: 'Todavía no hay cifra de contexto.',
-    full: { last: 'Última petición', session: 'Sesión', hit: 'Acierto de caché', cost: 'Coste', scope: '(sesión, todos los agentes)', input: 'entrada', cacheRead: 'caché leída', cacheWrite: 'caché escrita', output: 'salida' },
-    short: { last: 'Última', session: 'Sesión', hit: 'Acierto', cost: 'Coste', scope: '(todos los agentes)', input: 'ent.', cacheRead: 'c.leída', cacheWrite: 'c.escrita', output: 'sal.' },
+    last: 'Última petición',
+    session: 'Sesión',
+    hit: 'Acierto de caché',
+    hitText: 'de la entrada leída de caché',
+    cost: 'Coste',
+    scope: '(sesión, todos los agentes)',
+    scopeShort: '(todos los agentes)',
+    columns: { input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida' },
+    cache: 'Caché',
+    losses: 'Pérdidas de caché',
+    noLosses: 'Sin pérdidas de caché en esta sesión',
+    clearedAt: 'Borrada a las',
+    active: (left, ttl) => `activa, expira en ${left} (TTL ${ttl})`,
+    expired: ago => `caducada hace ${ago}`,
+    noCache: 'sin caché todavía',
+    causes: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap} > TTL`, invalidated: 'invalidada (cambió el prompt o las herramientas)' },
   },
-} as const satisfies Record<string, { full: Names; short: Names } & Record<string, unknown>>
+}
 
 /** `950`, `124.3k`, `200k`, `2.1M`: one decimal, a trailing `.0` dropped. */
 export function tokens (n: number): string {
@@ -67,82 +127,149 @@ function fitRow (row: Row, width: number): Row {
   return out
 }
 
-/** What the card shows: the fill, the autocompact point, the main thread's ledger and the session's cost in USD. */
+/**
+ * What the card shows: the fill, the autocompact point, the main thread's ledger, the session's cost
+ * in USD, and the main thread's cache with its TTL in force and the time the countdown is drawn for.
+ */
 export type CardView = {
   fill: ContextMeterFill
   compactAt: number | null
   ledger?: Ledger
   cost?: number | null
+  cache?: Cache
+  ttl?: number
+  now?: number
 }
-
-const COUNTS = ['input', 'cacheRead', 'cacheWrite', 'output'] as const
-type Count = typeof COUNTS[number]
-/** The counts on one line: all four, or split in two (in and out, then the cache). */
-const ONE_LINE: Count[][] = [['input', 'cacheRead', 'cacheWrite', 'output']]
-const TWO_LINES: Count[][] = [['input', 'output'], ['cacheRead', 'cacheWrite']]
 
 const widthOfRow = (row: Row) => row.reduce((sum, cell) => sum + cell.text.length, 0)
+const pad2 = (n: number) => String(n).padStart(2, '0')
 
-/**
- * The Last request and Session rows, aligned in columns, and the cache hit row: one form of them.
- * Each count is its dim name and its plain figure.
- */
-function tokenRows (last: Counts, total: Counts, names: Names, groups: Count[][]): Row[] {
-  const hit = hitRate(total)
-  const labelWidth = labelWidthOf(names, hit !== null)
-  const field = (counts: Counts, count: Count) => `${names[count]} ${tokens(counts[count])}`
-  const rowsOf = (label: string, counts: Counts): Row[] => groups.map((group, g) => {
-    const row: Row = [{ text: (g === 0 ? label : '').padEnd(labelWidth), tone: 'plain' }]
-    group.forEach((count, i) => {
-      // Padded to the widest of the column, so the two rows' counts line up.
-      const width = Math.max(field(last, count).length, field(total, count).length)
-      const pad = i < group.length - 1 ? ' '.repeat(width - field(counts, count).length) + GAP : ''
-      row.push({ text: `${names[count]} `, tone: 'dim' }, { text: tokens(counts[count]) + pad, tone: 'plain' })
-    })
-    return row
-  })
-  const rows = [...rowsOf(names.last, last), ...rowsOf(names.session, total)]
-  if (hit !== null) rows.push([{ text: names.hit.padEnd(labelWidth), tone: 'plain' }, { text: `${Math.round(hit * 100)}%`, tone: 'plain' }])
-  return rows
+/** Input in all: cache read, cache write and uncached (the API's `input_tokens`). */
+function valueOf (counts: Counts, column: Column): number {
+  if (column === 'input') return counts.cacheRead + counts.cacheWrite + counts.input
+  if (column === 'uncached') return counts.input
+  return counts[column]
 }
 
-const labelWidthOf = (names: Names, hasHit: boolean) =>
-  Math.max(names.last.length, names.session.length, names.cost.length, hasHit ? names.hit.length : 0) + GAP.length
+/** The label column: as wide as the longest label of the card's sections, and a gap. */
+const labelWidthOf = (words: Words) =>
+  Math.max(...[words.last, words.session, words.hit, words.cost, words.cache, words.losses].map(text => text.length)) + GAP.length
+
+/**
+ * The token table in `columns`: a dim header row, then the last request and the session, each figure
+ * under its header, columns as wide as their widest cell.
+ */
+function tableRows (last: Counts, total: Counts, words: Words, columns: Column[], labelWidth: number): Row[] {
+  const widths = columns.map(column =>
+    Math.max(words.columns[column].length, tokens(valueOf(last, column)).length, tokens(valueOf(total, column)).length))
+  const cells = (texts: string[], tone: Tone): Cell[] =>
+    texts.map((text, i) => ({ text: i < texts.length - 1 ? text.padEnd(widths[i]!) + GAP : text, tone }))
+  const figures = (counts: Counts) => columns.map(column => tokens(valueOf(counts, column)))
+  return [
+    [{ text: ' '.repeat(labelWidth), tone: 'plain' }, ...cells(columns.map(column => words.columns[column]), 'dim')],
+    [{ text: words.last.padEnd(labelWidth), tone: 'plain' }, ...cells(figures(last), 'plain')],
+    [{ text: words.session.padEnd(labelWidth), tone: 'plain' }, ...cells(figures(total), 'plain')],
+  ]
+}
+
+/** `41:10`, or `1:00:00` from an hour: what is left, rounded up to the second. */
+export function countdown (ms: number): string {
+  const s = Math.ceil(ms / 1000)
+  const h = Math.floor(s / 3600)
+  const mmss = `${pad2(Math.floor((s % 3600) / 60))}:${pad2(s % 60)}`
+  return h > 0 ? `${h}:${mmss}` : mmss
+}
+
+/** `45s`, `7m`, `1h07m`: a pause or how long ago, rounded down. */
+export function span (ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  return `${Math.floor(s / 3600)}h${pad2(Math.floor((s % 3600) / 60))}m`
+}
+
+/** `14:05`, local time. */
+export function clockTime (at: number): string {
+  const date = new Date(at)
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+}
+
+const ttlLabel = (ttl: number) => (ttl >= HOUR ? `${ttl / HOUR}h` : `${ttl / 60_000}m`)
+
+/** The cache line: active with the time left and the TTL, expired and how long ago, or no cache yet. */
+export function cacheStatus (cache: Cache, ttl: number, now: number, language: Language): string {
+  const words = WORDS[language]
+  const status = statusOf(cache, ttl, now)
+  if (status.kind === 'active') return words.active(countdown(status.left), ttlLabel(ttl))
+  if (status.kind === 'expired') return words.expired(span(status.ago))
+  return words.noCache
+}
+
+/**
+ * The cache rows: its status, then the losses, newest first (at most `maxLosses`), after the /clear
+ * marker when there is one; with no loss, a sentence saying so.
+ */
+function cacheRows (cache: Cache, ttl: number, now: number, words: Words, language: Language, labelWidth: number, maxLosses: number): Row[] {
+  const label = (text: string): Cell => ({ text: text.padEnd(labelWidth), tone: 'plain' })
+  const rows: Row[] = [[label(words.cache), { text: cacheStatus(cache, ttl, now, language), tone: 'plain' }]]
+  const marker: Row | undefined = cache.clearedAt === undefined ? undefined
+    : [{ text: `${words.clearedAt} ${clockTime(cache.clearedAt)}`, tone: 'dim' }]
+  const losses = cache.losses.slice(0, maxLosses)
+  if (losses.length === 0) {
+    if (marker !== undefined) rows.push(marker)
+    rows.push([{ text: words.noLosses, tone: 'plain' }])
+    return rows
+  }
+  const lost = losses.map(loss => `−${tokens(loss.lost)}`)
+  const lostWidth = Math.max(...lost.map(text => text.length))
+  const lines: Row[] = losses.map((loss, i) => [
+    { text: `${clockTime(loss.at)}  `, tone: 'dim' },
+    { text: `${lost[i]!.padEnd(lostWidth)}  `, tone: 'plain' },
+    { text: loss.cause === 'expired' ? words.causes.expired(span(loss.gap)) : words.causes[loss.cause], tone: 'plain' },
+  ])
+  if (marker !== undefined) lines.unshift(marker)
+  return [...rows, ...lines.map((line, i): Row => [label(i === 0 ? words.losses : ''), ...line])]
+}
 
 /** The cost row: the whole session's cost, subagents included, with its scope said dim. */
-function costRow (usd: number, names: Names, scope: string, hasHit: boolean): Row {
+function costRow (usd: number, words: Words, scope: string, labelWidth: number): Row {
   return [
-    { text: names.cost.padEnd(labelWidthOf(names, hasHit)), tone: 'plain' },
+    { text: words.cost.padEnd(labelWidth), tone: 'plain' },
     { text: `$${usd.toFixed(2)} `, tone: 'plain' },
     { text: scope, tone: 'dim' },
   ]
 }
 
 /**
- * The card for `view`, at most `width` columns wide border included. Without token rows it is 40
- * wide; with them, as wide as their widest form that fits, from one line each in full to two lines
- * each with short names; where even that does not fit, the token rows are left out. The cost row
- * (only for a cost above zero: a subscription reports 0) takes its full or short scope, or is left
- * out where neither fits. Null with no fill.
+ * The card for `view`, at most `width` columns wide border included. Without more rows it is 40
+ * wide; with them it widens to what they need. The token table takes the widest of its layouts that
+ * fits (all five columns, then without Uncached, then without Cache write too); where none fits the
+ * table, the hit row and the cost row are left out, so no number is cut. The cost row (only for a
+ * cost above zero: a subscription reports 0) takes its full or short scope, or is left out. The
+ * cache rows come last, at most `maxLosses` losses, cut at the border where the band is short.
+ * Null with no fill.
  */
-export function cardOf (view: CardView, language: Language, width = Infinity): Card | null {
-  const { fill, compactAt, ledger, cost = null } = view
+export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES): Card | null {
+  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, now = 0 } = view
   if (fill === null) return null
   const words = WORDS[language]
   const mark = fill.isEstimate ? '~' : ''
   const room = Math.max(1, width - FRAME)
+  const labelWidth = labelWidthOf(words)
 
   const last = ledger?.last
-  const forms: [Names, Row[]][] = last === undefined ? [] : [
-    [words.full, tokenRows(last, ledger!.total, words.full, ONE_LINE)],
-    [words.short, tokenRows(last, ledger!.total, words.short, ONE_LINE)],
-    [words.full, tokenRows(last, ledger!.total, words.full, TWO_LINES)],
-    [words.short, tokenRows(last, ledger!.total, words.short, TWO_LINES)],
-  ]
-  const formWidth = (form: Row[]) => Math.max(...form.map(widthOfRow))
-  const chosen = forms.find(([, form]) => formWidth(form) <= room)
-  const tokenForm = chosen?.[1] ?? []
-  const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, tokenForm.length > 0 ? formWidth(tokenForm) : 0))
+  const table = last === undefined ? undefined : LAYOUTS
+    .map(columns => tableRows(last, ledger!.total, words, columns, labelWidth))
+    .find(rows => Math.max(...rows.map(widthOfRow)) <= room)
+  const tokenRows: Row[] = table ?? []
+  const hit = ledger === undefined ? null : hitRate(ledger.total)
+  if (table !== undefined && hit !== null) {
+    tokenRows.push([{ text: words.hit.padEnd(labelWidth), tone: 'plain' }, { text: `${Math.round(hit * 100)}% `, tone: 'plain' }, { text: words.hitText, tone: 'dim' }])
+  }
+  const hasCache = cache !== undefined && (cache.last !== undefined || cache.clearedAt !== undefined)
+  const extra = hasCache ? cacheRows(cache!, ttl, now, words, language, labelWidth, maxLosses) : []
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...extra.map(widthOfRow))
+  const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const figures: Row = [{ text: words.context, tone: 'plain' }]
   if (fill.tokens !== undefined) figures.push({ text: `${GAP}${mark}${tokens(fill.tokens)} / ${tokens(fill.window)}`, tone: 'meter' })
@@ -151,20 +278,20 @@ export function cardOf (view: CardView, language: Language, width = Infinity): C
   const bar = split(fill.percent, content)
   const rows: Row[] = [figures, [{ text: '━'.repeat(bar.filled), tone: 'meter' }, { text: '─'.repeat(bar.empty), tone: 'dim' }]]
   if (compactAt !== null) rows.push([{ text: `${words.compact} ~${tokens(compactAt)}`, tone: 'dim' }])
-  rows.push(...tokenForm)
-  if (chosen !== undefined && cost !== null && cost > 0) {
-    const hasHit = hitRate(ledger!.total) !== null
-    const fits = [words.full.scope, words.short.scope].map(scope => costRow(cost, chosen[0], scope, hasHit)).find(row => widthOfRow(row) <= content)
+  rows.push(...tokenRows)
+  if (table !== undefined && cost !== null && cost > 0) {
+    const fits = [words.scope, words.scopeShort].map(scope => costRow(cost, words, scope, labelWidth)).find(row => widthOfRow(row) <= content)
     if (fits !== undefined) rows.push(fits)
   }
+  rows.push(...extra)
 
   const fitted = rows.map(row => fitRow(row, content))
   return { width: content + FRAME, content, height: fitted.length + 2, rows: fitted }
 }
 
-/** The card's rows as plain text, for /context-meter: at its widest, the token rows in full. */
+/** The card's rows as plain text, for /context-meter: at its widest, every loss of the history. */
 export function cardText (view: CardView, language: Language): string {
-  const card = cardOf(view, language)
+  const card = cardOf(view, language, Infinity, HISTORY)
   if (card === null) return WORDS[language].none
   return card.rows.map(row => row.map(cell => cell.text).join('').trimEnd()).join('\n')
 }
