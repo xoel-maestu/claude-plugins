@@ -33,6 +33,30 @@ export type ContextMeterLedger = {
   requests: number
 }
 
+/** A cache loss: when, the tokens of the previous prefix not read back, the first cause that held, and the pause before it (ms). */
+export type ContextMeterLoss = {
+  at: number
+  lost: number
+  cause: 'compact' | 'model' | 'expired' | 'invalidated'
+  gap: number
+}
+
+/**
+ * The main thread's prompt cache this session: the previous request's cached prefix (cache read
+ * plus cache write), model and time; whether a main-thread compaction came since; whether the
+ * session has rate limits (a subscription) and whether a hit past a 5 minute pause showed a 1h TTL;
+ * the 10 newest losses, newest first; when /clear started it over. `startedAt` as in the ledger.
+ */
+export type ContextMeterCache = {
+  startedAt?: number
+  last?: { prefix: number; model: string; at: number }
+  isCompactPending: boolean
+  isSubscription: boolean
+  isLongSeen: boolean
+  losses: ContextMeterLoss[]
+  clearedAt?: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'context-meter': {
@@ -43,6 +67,10 @@ declare module 'claude-code' {
       ledger: ContextMeterLedger
       /** What the session has cost in US dollars (`$.session.usage().cost.usd`); null when the host has no figure. */
       cost: number | null
+      /** The main thread's prompt cache and its losses; survives a reload, /clear starts it over. */
+      cache: ContextMeterCache
+      /** The time the card's cache countdown was last drawn for; written only when that line changes. */
+      now: number
     }
   }
 }
