@@ -1,7 +1,7 @@
 // Transcript parsing, run with `claude plugin test .`: synthetic JSONL lines only.
 import { expect, test } from 'claude-code/testing'
 
-import { lastTtl } from './transcript'
+import { completeLines, lastTtl } from './transcript'
 
 /** A main-thread (or, with `extra`, another) assistant entry writing `m5` and `h1` tokens to the cache. */
 const assistant = (m5: number, h1: number, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -46,4 +46,10 @@ test("a sidechain's (a subagent's) entry is ignored", () => {
 test('an assistant entry without the cache_creation breakdown is skipped', () => {
   const old = JSON.stringify({ type: 'assistant', message: { usage: { cache_creation_input_tokens: 50 } }, note: '"cache_creation"' })
   expect(lastTtl(jsonl(assistant(700, 0), old))).toBe('5m')
+})
+
+test('a cut tail drops its first, partial line; a whole file keeps it', () => {
+  expect(completeLines('tial"}\n{"a":1}\n', true)).toBe('{"a":1}\n')
+  expect(completeLines('{"a":1}\n', false)).toBe('{"a":1}\n')
+  expect(completeLines('no newline', true)).toBe('')
 })

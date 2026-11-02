@@ -1,7 +1,19 @@
 import type { ContextMeterTtl } from '../types'
 
-/** `$.fs.read` rejects a file over 4 MiB: a transcript past it is not read. */
+/** `$.fs.read` rejects a file over 4 MiB: the whole-file fallback skips a transcript past it. */
 export const MAX_READ = 4 * 1024 * 1024
+/** The bytes read from the transcript's end with `tail -c`: many responses' worth of JSONL. */
+export const TAIL = 256 * 1024
+
+/**
+ * The complete lines of a file's last bytes: when the file is longer than what was read, the first
+ * line may be cut and is dropped.
+ */
+export function completeLines (tail: string, isCut: boolean): string {
+  if (!isCut) return tail
+  const first = tail.indexOf('\n')
+  return first === -1 ? '' : tail.slice(first + 1)
+}
 
 type Entry = {
   type?: unknown
