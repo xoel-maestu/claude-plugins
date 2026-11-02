@@ -59,6 +59,13 @@ async function show ($: EngineInterface, next: ContextMeterFill) {
 }
 
 /**
+ * The breakdown's tokens over the model's window, as the figure and the status line measure: the
+ * breakdown's own percentage is over the compaction window, which may be smaller.
+ */
+const estimateOf = (tokens: number, window: number): ContextMeterFill =>
+  ({ percent: Math.round((tokens / window) * 100), tokens, window, isEstimate: true })
+
+/**
  * Takes the engine's figure when it has one. While it has none (no response yet in this window: a
  * fresh, resumed, compacted or rewound session) it counts the window once with the local summary
  * breakdown and keeps that estimate until the next response. The same count gives the autocompact
@@ -82,7 +89,7 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
     if ((await read($, compactAt)) !== threshold) await update($, compactAt, () => threshold)
     if (needsEstimate) {
       await show($, breakdown
-        ? { percent: breakdown.percentage, tokens: breakdown.totalTokens, window: breakdown.rawMaxTokens, isEstimate: true }
+        ? estimateOf(breakdown.totalTokens, context.window)
         : null)
     }
   } finally {
