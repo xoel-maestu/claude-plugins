@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.316
+          claude --version
+
+      - name: Validate the marketplace
+        run: claude plugin validate .
+
+      - name: Validate and test each plugin
+        run: |
+          set -euo pipefail
+          for dir in plugins/*/; do
+            p="${dir%/}"
+            echo "::group::$p"
+            claude plugin validate "$p"
+            claude plugin test "$p"
+            echo "::endgroup::"
+          done

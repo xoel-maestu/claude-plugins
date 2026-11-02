@@ -1,84 +1,76 @@
 # sub-meter
 
-Subscription usage at the bottom right of the Claude Code prompt footer: the 5-hour and weekly windows, with a hover card that adds the reset times, the pace and how old the reading is.
+A Claude Code plugin that shows your subscription usage at the bottom right of the prompt footer: the 5-hour and weekly windows, each with its percentage and the time to reset. Hover the meter for a card with the reset times, the pace and how old the reading is. `/sub-meter` prints the same card as text.
 
-```
-5h ━━━─────── 31% ↻ 2h 10m
-```
+It shows nothing when the session has no subscription rate limits (an API key, for example).
 
-Beside [context-meter](../context-meter), the context meter comes first:
+## What it shows
 
-```
-ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m
-```
+The meter in the footer (here beside [context-meter](../context-meter), captured at 120 columns), showing the weekly window and then the 5-hour window:
 
-With the pointer on the meter, a card opens in the band above the prompt, at its right end:
-
-```
-Subscription
-5h      ━━━━━━━━━━━━━━──────  68%   resets 04:40 (in 2h 10m)
-Week    ━━──────────────────  12%   resets Thu 21:00 (in 3d 18h)
-Pace    at this pace, 5h reaches 100% at 03:50
-        at this pace, the week won't reach 100% before reset
-Read    <1m ago (another session)
+```text
+⏵⏵ auto mode on · ← 5 agents                                           ctx ─────── 5% · week ━━──────── 20% ↻ 3d 15h
+⏵⏵ auto mode on · ← 5 agents                                                ctx ─────── 5% · 5h ━━━━━━━━── 83% ↻ 40m
 ```
 
-`/sub-meter` prints the same rows as text, for a terminal without mouse reporting.
+The card, with the pointer on the meter:
 
-This sub-meter replaces the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude): both are named `sub-meter` and register `/sub-meter`, so install one or the other, not both.
+```text
+╭──────────────────────────────────────────────────────────────────╮
+│ Subscription                                                     │
+│ 5h      ━━━━━━━━━━━━━━━━━───  83%   resets 06:00 (in 40m)        │
+│ Week    ━━━━────────────────  20%   resets Thu 21:00 (in 3d 15h) │
+│ Pace    at this pace, 5h won't reach 100% before reset           │
+│         at this pace, the week won't reach 100% before reset     │
+│ Read    <1m ago (this session)                                   │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+- **5h** and **Week**: the usage of each window, and when it resets, as a local time (with the weekday when it is not today) and as time left. A window past its reset shows 0%.
+- **Pace**: at the rate used so far in the window, when it reaches 100%, or that it won't before the reset. A window that started less than 10 minutes ago, or is at 0%, gets no pace row.
+- **Read**: how long ago the reading was taken, and whether by this session or another one.
+
+Colors: the bar uses the theme's accent color, the warning color from 75% and the error color from 90%.
+
+The reading is shared between sessions: each open session checks the plugin store every 8 seconds and takes a newer reading, and a new session shows the last reading before its first response. A reading whose windows have all reset is not shown.
+
+When the footer is short the meter drops its bar, then the reset time, then hides. It never wraps to a second line. To make room, it also removes `(shift+tab to cycle)` and `esc to interrupt` from the hint line (see the options).
 
 ## Install
 
 ```
-/plugin install sub-meter --marketplace xoel-maestu/claude-plugins
+/plugin marketplace add xoel-maestu/claude-plugins
+/plugin install sub-meter@xoel-plugins
 ```
 
-## Behaviour
+This plugin replaces the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude). Both use the name `sub-meter` and the command `/sub-meter`, so keep only one of them enabled.
 
-Parity with the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude): each point is a test in `hooks/*.test.ts(x)` or, where it needs a real session, a manual check.
+The hover card needs a terminal with mouse reporting. `/sub-meter` works in any terminal.
 
-- [x] 5-hour (`five_hour`) and weekly (`seven_day`) windows, read from `session.measure` and, at start, from `$.session.usage().rateLimits`; other kinds (a gateway's `spend_limit`) are ignored. Tests: `keeps the 5-hour and weekly windows…`, `other kinds are ignored…`, `the reading from session.measure replaces…`.
-- [x] The reading is kept in `$.store` (`reading`: the windows, the time it was taken and the session that took it, by its `startedAt`); every open session reads it again every 8 s and takes it when it is newer, so a reading in one session shows in the others. A new session shows the stored reading before its first response. A failed read keeps the reading on screen. Tests: `a new session shows the stored reading…`, `another session's newer reading shows within 8 s…`, `a stored reading is taken only when well formed`. Manual: two sessions open share a reading within 8 s.
-- [x] `display`: `rotate` (default), `both`, `session`, `week`; with a single window, every mode shows it. `rotateSeconds` (default 8, at least 1). Tests: `rotate switches window…`, `rotateSeconds sets the switch`, `display both…`, `display session…`, `display week…`, `rotate, both, session and week…`.
-- [x] Bar (10 cells), percentage and `↻` with the time to the reset (`42m`, `2h 10m`, `3d 18h`); a window past its reset shows 0% and no reset time. The countdown is drawn again every 8 s. Tests: `shows the 5-hour window first…`, `a window past its reset…`, `the countdown is drawn again every 8 s`.
-- [x] Colors: the filled bar in the theme's `claude` color (Anthropic orange), `warning` from 75%, `error` from 90%; the empty cells, the labels and the reset time dim; the percentage plain. Test: `colors: …`.
-- [x] `hideCycleHint` and `hideInterruptHint` (both on by default) rewrite `PromptHint` without `(shift+tab to cycle)` and `esc to interrupt`; the meter measures the line as drawn. Tests: `hides "(shift+tab to cycle)"…`, `hideCycleHint and hideInterruptHint off…`, `drops the cycle and interrupt hints…`.
-- [x] No subscription (no rate limits): draws nothing and passes the row on. Test: `no subscription…`.
-- [x] Narrow footer: gives up the bar, then the reset time, then itself; never a second line. What is beneath that is hidden or placed out of the flow takes no room. Tests: `a narrow footer gives up…`, `counts what is beneath…`, `gives up the bar, then the reset time, then itself`. Manual: at 80 columns, no wrap.
-- [x] Labels `5h` and `week` (Spanish, `language: es`: `5h` and `semana`). Test: `labels in Spanish…`.
-- [x] `/sub-meter` prints the card as text. Tests: `/sub-meter prints the card as text`, `/sub-meter in Spanish…`, `/sub-meter without a subscription…`.
-- [ ] Manual, real session: with `sub-meter@better-claude` off, the figures match what it showed and the status line.
+## Options
 
-The hint parts are dropped whether or not the session has a subscription, as in the original.
+Set them in `/config`.
 
-Beyond the original:
+| Option | Default | Description |
+| --- | --- | --- |
+| `display` | `rotate` | `rotate`: the 5-hour and weekly windows in turn. `both`: side by side. `session`: the 5-hour window only. `week`: the weekly window only. |
+| `rotateSeconds` | `8` | Seconds each window shows with `display` set to `rotate` (at least 1). |
+| `hideCycleHint` | `true` | Remove `(shift+tab to cycle)` from the hint line. |
+| `hideInterruptHint` | `true` | Remove `esc to interrupt` from the hint line while Claude works. |
+| `language` | `en` | Language of the labels and of `/sub-meter`: `en` or `es`. |
 
-- A reading whose windows are all past their reset is not drawn, nor taken from the store, and leaves `$.state`, so context-meter keeps no room for it. Tests: `a reading with every window past its reset…`, `a stored reading past its reset…`.
-- A session that had two main-thread responses (steps without an `agentId`, with token counts) without the two windows, before it ever had them (it is on an API key, say), hides the reading in that session only and takes none from the store for the rest of it; `$.store` is left alone, since other sessions may be on a subscription. `rateLimits` is empty before the first reading too, so a fill alone (a resumed session, before any response) or a single response changes nothing. Once the session had rate limits, a later measure without them changes nothing. Tests: `a resumed session with a fill…`, `two main-thread responses without rate limits…`, `a subscription whose rate limits arrive…`, `once this session had rate limits…`.
+## How it works
 
-## The card
+- The windows (`five_hour` and `seven_day`) come from the `session.measure` hook and, at start, from `$.session.usage().rateLimits`. Other limit kinds are ignored.
+- The reading is kept in the plugin store with the time it was taken, which is how other sessions pick it up.
+- The meter is drawn in the footer row (`SessionMode`). The card is drawn in the band above the prompt (`AbovePrompt`), hidden until the pointer is on the meter or on the card. Both join one hover group, so no code runs on hover.
+- If a session gets two main-thread responses without rate limits before it ever had them, the meter hides in that session. The stored reading is left alone for other sessions.
 
-- **5h** and **Week** (Spanish **5h**, **Semana**): a 20-cell bar in the theme's `claude` color (`warning` from 75%, `error` from 90%, the empty cells dim), the percentage, and the reset as a local time, with the weekday when it is not today, and the time left (`se reinicia a las 04:40 (en 2h 10m)`, `el jue a las 21:00`). A window past its reset shows 0% and `reset` (`reiniciada`).
-- **Pace** (**Ritmo**), from `hooks/pace.ts`, one row per window that has one: the window has run `elapsed = duration − (reset − now)` (5 h, 7 days); with `elapsed` under 10 minutes or 0% there is no row. At the pace so far (`percent / elapsed`) the window reaches 100% at `now + (100 − percent) / pace`: `at this pace, 5h reaches 100% at 03:55` (`a este ritmo, 5h llega al 100% a las 03:55`), with the weekday when not today; at or after the reset, `… won't reach 100% before reset` (`… no llega al 100% antes del reinicio`); at 100% or more, `5h is already at 100%` (`5h ya está al 100%`), without the pace prefix. Both windows get a row: each is short, and the band has the rows.
-- **Read** (**Leído**): how long ago the reading was taken and whether by this session or another (`<1m ago (another session)`, `hace 3m (esta sesión)`), in whole minutes.
-- The labels dim, the rest plain, in a rounded dim border.
-- A narrow band: the bars give up to half their cells, then the reset tails shorten to `↻ 04:40`, then go, then the bars go; a pace or read row drops its opening (`at this pace, `, `(another session)`), then goes. No word or number is cut and no row wraps.
-- Every text in the card changes at most once a minute. The 8 s tick works the card out and writes the time it is drawn for (`$.state` `now`) only when the text changes, so the band redraws only then.
+### Beside context-meter
 
-It is drawn as context-meter draws its card (see its README, "How the card is drawn"): the meter's Box joins the hover group `sub-meter` (`hover={{ scope: 'sub-meter' }}`), and the card is drawn in `AbovePrompt` after what is beneath it (`next(e)`, kept whole: the engine's node, context-meter's card), in a holder as wide as the band, `justifyContent="flex-end"`, `display="none"` and `hover={{ scope: 'sub-meter', display: 'flex' }}`. The two plugins' groups differ, so each card opens with its own meter. With no reading to show, or while a survey holds the band, the band is passed on as it came. Tests: `the hover card, in the band…`, `beside context-meter's card…` (both orders).
+With [context-meter](../context-meter) installed, the row reads `ctx … · 5h … · <the footer's own items>` whichever plugin loads first. As the row narrows, parts go in this order: sub-meter's bar, its reset time, context-meter's bar, sub-meter, the `ctx` prefix, context-meter. With the usual hint line, by terminal width:
 
-## Beside context-meter
-
-Both meters draw in `SessionMode`, each in a Box with its own `key` (`context-meter`, `sub-meter`), and the row is the same whichever plugin wraps the other: `ctx … · 5h … · <the engine's modes and other plugins>`.
-
-- When context-meter's Box is beneath (context-meter is the inner one), sub-meter takes it out, with its separator, and draws it first.
-- When sub-meter's Box is beneath, context-meter draws itself before it.
-- Room: the terminal's width less the footer (26 columns), the hint line as sub-meter draws it and whatever else is beneath (not the other meter; hidden and out-of-flow nodes count nothing). context-meter takes 14 columns at most and keeps its bar only while the room holds it, a separator and sub-meter's least form (counted as 8 columns). sub-meter takes what is left after context-meter.
-- Each needs to know the other's part even when it is the inner one and cannot see it, so each reads the other's `$.state` (any plugin may read any value): sub-meter reads context-meter's `fill` and works out its width by context-meter's rule (`contextWidth` in `hooks/fit.ts`); context-meter reads sub-meter's `reading` (drawn or not) and `hides` (which hint parts are dropped, so both measure the same hint line; context-meter applies the same `tidy`).
-
-As the row narrows, in this order: sub-meter's bar goes, then its reset time, then context-meter's bar, then sub-meter, then context-meter's `ctx` prefix, then context-meter. With the usual hint (`? for shortcuts` once the cycle hint is dropped):
-
-```
+```text
 200  ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m
 120  ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m
  80  ctx ━━━━── 62% · 5h 31% ↻ 2h 10m
@@ -88,33 +80,23 @@ As the row narrows, in this order: sub-meter's bar goes, then its reset time, th
  48  62%
 ```
 
-The test kit loads no module from outside the plugin's folder, and an inline plugin is a single function, so each plugin's tests load a simulation of the other (its node shape and its `$.state` exactly) in both orders and assert this table.
-
-## Options (`/config`)
-
-| Option | Default | |
-| --- | --- | --- |
-| `display` | `rotate` | `rotate`, `both`, `session` or `week` |
-| `rotateSeconds` | 8 | seconds per window with `rotate` (at least 1) |
-| `hideCycleHint` | on | drop `(shift+tab to cycle)` from the hint line |
-| `hideInterruptHint` | on | drop `esc to interrupt` from the hint line |
-| `language` | `en` | `en` or `es`, for the labels and `/sub-meter` |
+This table is asserted by the tests, not captured from a terminal.
 
 ## Development
 
 ```
 claude --plugin-dir plugins/sub-meter
 claude plugin validate plugins/sub-meter
-tsc -p plugins/sub-meter
 claude plugin test plugins/sub-meter
+tsc -p plugins/sub-meter
 ```
 
-`tsc -p` reads `.claude-plugin/types/`, which the engine writes when it loads the folder with `--plugin-dir`.
+`tsc` compiles against `.claude-plugin/types/`, which Claude Code writes when it loads the plugin with `--plugin-dir`. Those files are not committed, so CI runs `validate` and `test` but not `tsc`.
 
 ## Credits
 
-Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
+Inspired by the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). The code is written from scratch.
 
 ## License
 
-MIT © Xoel García Maestu
+[MIT](../../LICENSE) © 2026 Xoel García Maestu

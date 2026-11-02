@@ -1,6 +1,6 @@
 {
   "name": "context-meter",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
   "author": {
     "name": "Xoel García Maestu",
