@@ -229,35 +229,74 @@ test('reads the autocompact point again when autocompact is switched in /config'
   expect((await runCommand($)).text?.split('\n')).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
 })
 
-type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
-/** The card the meter draws: the Box placed out of the flow, and its rows as text. */
-async function cardIn (ui: { drawn: () => Promise<unknown> }) {
-  const find = (node: unknown): Node | undefined => {
-    if (node === null || typeof node !== 'object') return undefined
-    const n = node as Node
-    if (n.props?.position === 'absolute') return n
-    for (const child of n.children ?? []) {
-      const found = find(child)
-      if (found !== undefined) return found
-    }
-    return undefined
+type Node = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
+/** The Box placed out of the flow in a drawing, if any. */
+function placedIn (node: unknown): Node | undefined {
+  if (node === null || typeof node !== 'object') return undefined
+  const n = node as Node
+  if (n.props?.position === 'absolute') return n
+  for (const child of n.children ?? []) {
+    const found = placedIn(child)
+    if (found !== undefined) return found
   }
-  const box = find(await ui.drawn())
+  return undefined
+}
+/** The card the band draws: the Box placed out of the flow, and its rows as text. */
+async function cardIn (ui: { drawn: () => Promise<unknown> }) {
+  const box = placedIn(await ui.drawn())
   const text = (node: unknown): string =>
     typeof node === 'string' ? node : ((node as Node | null)?.children ?? []).map(text).join('')
   return { box, rows: (box?.children ?? []).map(text) }
 }
 
-test('the hover card: a rounded dim border, hidden, its height above the meter, three rows', async ($, on) => {
+const band = ($: Engine, bodyColumns = 115, hasSurvey = false) =>
+  $.ui.mount({
+    plugin: 'context-meter',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey, isWorking: false, maxRows: 30, bodyColumns, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    viewport: { columns: bodyColumns + 5, rows: 30 },
+  })
+
+test('the footer draws no card: the meter alone, joined to the hover group', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
-  const { box, rows } = await cardIn(await footer($, 120))
+  const ui = await footer($, 120)
+  const drawn = (await ui.drawn()) as Node
+  expect(placedIn(drawn)).toBeUndefined()
+  // The tree keeps a hover beside the props.
+  expect(drawn.children?.[0]).toMatchObject({ props: { key: 'context-meter' }, hover: { scope: 'context-meter' } })
+})
+
+test('every cell the footer drawing holds is on the row, as a plugin above it would count', async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  // A plain walk of every Text, as sub-meter measures what is beneath it: no card in the sum.
+  const all = (node: unknown): number => {
+    if (typeof node === 'string') return [...node].length
+    if (node === null || typeof node !== 'object') return 0
+    return ((node as Node).children ?? []).reduce((sum: number, child) => sum + all(child), 0)
+  }
+  expect(all(await (await footer($, 120)).drawn())).toBe(14)
+})
+
+test('the hover card, in the band: out of the flow at its bottom right, hidden, in the group, three rows', async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  const ui = await band($)
+  // Its anchor: the last in the flow, as wide as the band, no row tall.
+  const drawn = (await ui.drawn()) as Node
+  expect(drawn.children?.at(-1)).toMatchObject({ props: { width: 115, height: 0 } })
+  const { box, rows } = await cardIn(ui)
   expect(box?.props).toMatchObject({
-    position: 'absolute', right: 0, top: -5, width: 40, height: 5,
+    position: 'absolute', bottom: 0, right: 0, width: 40, height: 5,
     borderStyle: 'round', borderDimColor: true, display: 'none',
   })
-  expect(JSON.stringify(box)).toContain('"hover":{"display":"flex"}')
+  expect(box?.hover).toEqual({ scope: 'context-meter', display: 'flex' })
+  expect(box?.props?.top).toBeUndefined()
   // Each row is the content (36) with a column of padding at each side: the border's inside.
   expect(rows).toEqual([
     ' ' + 'Context   124k / 200k   62%'.padEnd(36) + ' ',
@@ -266,20 +305,54 @@ test('the hover card: a rounded dim border, hidden, its height above the meter, 
   ])
 })
 
-test('the card leaves out the autocompact row when the breakdown has none, and sits a row lower', async ($, on) => {
+test('the band keeps what is beneath it first in the flow, the card adding no row', async ($, on) => {
+  // Beneath: another plugin's line in the band.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{'other plugin'}</Text>
+  })
+  world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  const drawn = (await (await band($)).drawn()) as Node
+  expect(drawn.children).toHaveLength(2)
+  expect(drawn.children?.[0]).toMatchObject({ type: 'Text', children: ['other plugin'] })
+  // The rest is the anchor, 0 rows, holding only the card out of the flow.
+  const anchor = drawn.children?.[1] as Node
+  expect(anchor.props).toMatchObject({ height: 0 })
+  expect(anchor.children).toHaveLength(1)
+  expect((anchor.children?.[0] as Node).props).toMatchObject({ position: 'absolute' })
+})
+
+test('with no figure the band is passed through as it came, so it gets no blank row', async ($, on) => {
+  world(on, fill(), null)
+  await startSession($)
+  const drawn = await (await band($)).drawn()
+  expect(placedIn(drawn)).toBeUndefined()
+  expect(drawn).toEqual({ type: 'engine', ref: 0 })
+})
+
+test('the band yields to a survey', async ($, on) => {
+  world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  expect(placedIn(await (await band($, 115, true)).drawn())).toBeUndefined()
+})
+
+test('the card leaves out the autocompact row when the breakdown has none, a row shorter', async ($, on) => {
   world(on, fill(62), null)
   await startSession($)
   await measure($, 62)
-  const { box, rows } = await cardIn(await footer($))
-  expect(box?.props).toMatchObject({ top: -4, height: 4 })
+  const { box, rows } = await cardIn(await band($))
+  expect(box?.props).toMatchObject({ bottom: 0, height: 4 })
   expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
 })
 
-test('the card narrows to a short terminal and takes the meter color past warnAt', async ($, on) => {
+test('the card narrows to a narrow band and takes the meter color past warnAt', async ($, on) => {
   world(on, fill(62), null)
   await startSession($)
   await measure($, 62)
-  const { box } = await cardIn(await footer($, 34))
+  const { box } = await cardIn(await band($, 30))
   expect(box?.props).toMatchObject({ width: 30 })
   expect(JSON.stringify(box)).toContain('"color":"warning"')
 })
@@ -288,16 +361,8 @@ test('the card in Spanish', { options: { language: 'es' } }, async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
-  const { rows } = await cardIn(await footer($))
+  const { rows } = await cardIn(await band($))
   expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
-})
-
-test('the hidden card takes no width on the row', async ($, on) => {
-  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
-  await startSession($)
-  await measure($, 62)
-  // 46 - 26 = 20 columns: the 14 of the meter fit, the 40 of the card would not.
-  expect(await row(await footer($, 46))).toEqual(['ctx ', '━━━━', '── ', '62%'])
 })
 
 test('/context-meter prints the card as text, or says there is no figure', async ($, on) => {

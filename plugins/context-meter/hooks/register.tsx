@@ -15,6 +15,9 @@ const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
 const FOOTER = 4 + 2 + 20
+// The hover group the meter (in SessionMode) and its card (in AbovePrompt) share: a pointer on
+// either lights both, so the card shows while the meter or the card itself is under it.
+const SCOPE = 'context-meter'
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
 // point was read for and whether it is to be read again, the stretch (bumped by every figure,
@@ -39,7 +42,7 @@ function isBlank (node: RenderNode | undefined): boolean {
   return (node.type === 'Box' || node.type === 'Text') && (node.children ?? []).every(isBlank)
 }
 
-/** Columns a drawing takes on the row; a card placed out of the flow (absolute or hidden) takes none. */
+/** Columns a drawing takes on the row; what is placed out of the flow (absolute or hidden) takes none. */
 function widthOfNode (node: RenderNode | undefined, modes: readonly string[]): number {
   if (node === undefined || node === null) return 0
   if (typeof node === 'string') return widthOf(node)
@@ -54,12 +57,6 @@ function widthOfNode (node: RenderNode | undefined, modes: readonly string[]): n
 function roomOf (e: { surface: string; viewport?: RenderViewport }) {
   if (e.surface !== 'terminal' || e.viewport === undefined) return Infinity
   return e.viewport.columns - FOOTER - (hintWidth > 0 ? 1 + hintWidth : 0)
-}
-
-/** The card's width: 40 columns, or what the terminal leaves inside the footer's padding. */
-function cardRoomOf (e: { surface: string; viewport?: RenderViewport }) {
-  if (e.surface !== 'terminal' || e.viewport === undefined) return CARD_WIDTH
-  return Math.min(CARD_WIDTH, e.viewport.columns - 4)
 }
 
 const same = (a: ContextMeterFill, b: ContextMeterFill) => JSON.stringify(a) === JSON.stringify(b)
@@ -208,8 +205,9 @@ export const register: Register = (on, options) => {
 
   // Bottom right of the footer: the meter, then whatever is beneath it (the engine's mode labels,
   // another plugin's drawing). Where the row is short it drops its bar, then its prefix, then itself.
+  // The card is not drawn here: the footer clips what rises above it to about four rows.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, threshold, beneath] = await Promise.all([read($, fill), read($, compactAt), next(e)])
+    const [shown, beneath] = await Promise.all([read($, fill), next(e)])
     if (shown === null) return beneath
 
     const text = label(shown.percent, shown.isEstimate)
@@ -222,38 +220,59 @@ export const register: Register = (on, options) => {
     const color = colorFor(shown.percent)
     const isDim = color === undefined
     const bar = barOf(shown.percent, text)
-    const card = cardOf(shown, threshold, language, cardRoomOf(e))
-    const toneProps = (tone: Tone) =>
-      tone === 'meter' ? { color, dimColor: isDim } : tone === 'dim' ? { dimColor: true } : {}
 
     return (
       <Box flexDirection="row">
-        <Box key="context-meter" flexDirection="row">
+        <Box key="context-meter" flexDirection="row" hover={{ scope: SCOPE }}>
           {form !== 'bare' ? <Text dimColor>ctx </Text> : null}
           {form === 'bar' ? <Text color={color} dimColor={isDim}>{'━'.repeat(bar.filled)}</Text> : null}
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
           <Text color={color} dimColor={isDim}>{text}</Text>
-          {card === null ? null : (
-            // The card: its bottom border on the row above the meter, its right edge on the meter's,
-            // shown while hovered. The padding is drawn as spaces in each row, so every cell inside
-            // the border is written over what lies beneath (the theme has no background key to paint).
-            <Box
-              position="absolute" top={-card.height} right={0} width={card.width} height={card.height}
-              flexDirection="column" borderStyle="round" borderDimColor
-              display="none" hover={{ display: 'flex' }}
-            >
-              {card.rows.map(cells => (
-                <Box flexDirection="row">
-                  <Text> </Text>
-                  {cells.map(cell => <Text {...toneProps(cell.tone)}>{cell.text}</Text>)}
-                  <Text> </Text>
-                </Box>
-              ))}
-            </Box>
-          )}
         </Box>
         {hasBeneath ? <Text dimColor>{SEPARATOR}</Text> : null}
         {beneath}
+      </Box>
+    )
+  })
+
+  // The hover card, in the band above the prompt: placed out of the flow at the band's bottom right,
+  // so its bottom border sits on the row above the prompt's top border and it moves nothing of what
+  // the band holds. Hidden until the meter's group is hovered. With nothing to show, the band is
+  // left as it was, so it gets no row of its own.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const [shown, threshold, beneath] = await Promise.all([read($, fill), read($, compactAt), next(e)])
+    if (shown === null || e.props.hasSurvey) return beneath
+    const card = cardOf(shown, threshold, language, Math.min(CARD_WIDTH, e.props.bodyColumns))
+    if (card === null) return beneath
+
+    const { Box, Text } = $.ui.resolve(e)
+    const color = colorFor(shown.percent)
+    const isDim = color === undefined
+    const toneProps = (tone: Tone) =>
+      tone === 'meter' ? { color, dimColor: isDim } : tone === 'dim' ? { dimColor: true } : {}
+
+    // The anchor: in the flow after what the band holds, as wide as the band and no row tall, so
+    // the card's bottom right is the band's (an engine node may not sit under a Box that sets a
+    // width, so the anchor is apart from it). The padding is drawn as spaces in each row, so every
+    // cell inside the border is written over what lies beneath (the theme has no background key).
+    return (
+      <Box flexDirection="column">
+        {beneath}
+        <Box width={e.props.bodyColumns} height={0}>
+          <Box
+            position="absolute" bottom={0} right={0} width={card.width} height={card.height}
+            flexDirection="column" borderStyle="round" borderDimColor
+            display="none" hover={{ scope: SCOPE, display: 'flex' }}
+          >
+            {card.rows.map(cells => (
+              <Box flexDirection="row">
+                <Text> </Text>
+                {cells.map(cell => <Text {...toneProps(cell.tone)}>{cell.text}</Text>)}
+                <Text> </Text>
+              </Box>
+            ))}
+          </Box>
+        </Box>
       </Box>
     )
   })
