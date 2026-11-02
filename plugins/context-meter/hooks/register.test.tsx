@@ -15,10 +15,10 @@ type Breakdown = { percentage: number; totalTokens: number; threshold?: number; 
 /**
  * Everything beneath the mod: the session's usage, the summary breakdown it counts (null when there
  * is none), how many counts were asked, the commands registered and what the engine draws. `hold`,
- * when set, keeps a count waiting until it resolves.
+ * when set, keeps a count waiting until it resolves; `onCount` hears a count begin.
  */
 function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakdown = null) {
-  const live = { context, breakdown, counts: 0, hold: undefined as Promise<void> | undefined }
+  const live = { context, breakdown, counts: 0, hold: undefined as Promise<void> | undefined, onCount: () => {} }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 'test-session' }) as never)
@@ -28,6 +28,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   on('session.usage', async ($, e) => {
     if (e.breakdown === undefined) return { value: { startedAt: 0, context: live.context, rateLimits: [] } }
     live.counts += 1
+    live.onCount()
     const b = live.breakdown
     await live.hold
     const counted = b === null ? undefined : {
@@ -165,6 +166,22 @@ test('shows nothing with neither a figure nor a breakdown', async ($, on) => {
   world(on, fill(), null)
   await startSession($)
   expect(await (await footer($)).find({ key: 'context-meter' })).toBeUndefined()
+})
+
+test('a figure that arrives while counting is not replaced by the estimate', async ($, on) => {
+  const w = world(on, fill(), { percentage: 16, totalTokens: 32_000 })
+  await startSession($)
+  let release = () => {}
+  w.live.hold = new Promise(resolve => { release = resolve })
+  const counting = new Promise<void>(resolve => { w.live.onCount = resolve })
+  const pending = runCommand($)
+  // The response lands while the count is out.
+  await counting
+  w.live.context = fill(17)
+  await measure($, 17)
+  release()
+  await pending
+  expect(await row(await footer($))).toEqual(['ctx ', '━', '───── ', '17%'])
 })
 
 test('the estimate is measured against the context window, as the figure is', async ($, on) => {
