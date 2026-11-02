@@ -34,8 +34,8 @@ type Words = {
   hit: string
   hitText: string
   cost: string
-  scope: string
-  scopeShort: string
+  /** After the amount: on a subscription it is not billed, otherwise it is an estimate. */
+  costTail: Record<'subscription' | 'list', { full: string; short: string }>
   columns: Record<Column, string>
   cache: string
   losses: string
@@ -60,8 +60,10 @@ const WORDS: Record<Language, Words> = {
     hit: 'Cache hit',
     hitText: 'of input read from cache',
     cost: 'Cost',
-    scope: '(session, all agents)',
-    scopeShort: '(all agents)',
+    costTail: {
+      subscription: { full: 'at API list prices (not billed on your plan)', short: '(not billed)' },
+      list: { full: 'at list prices (session, all agents)', short: '(estimate)' },
+    },
     columns: { input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output' },
     cache: 'Cache',
     losses: 'Cache losses',
@@ -83,8 +85,10 @@ const WORDS: Record<Language, Words> = {
     hit: 'Acierto de caché',
     hitText: 'de la entrada leída de caché',
     cost: 'Coste',
-    scope: '(sesión, todos los agentes)',
-    scopeShort: '(todos los agentes)',
+    costTail: {
+      subscription: { full: 'a precio de lista de la API (no se factura en tu plan)', short: '(no se factura)' },
+      list: { full: 'a precio de lista (sesión, todos los agentes)', short: '(estimación)' },
+    },
     columns: { input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida' },
     cache: 'Caché',
     losses: 'Pérdidas de caché',
@@ -147,7 +151,8 @@ function fitRow (row: Row, width: number): Row {
 
 /**
  * What the card shows: the fill, the autocompact point, the main thread's ledger, the session's cost
- * in USD, and the main thread's cache with its TTL in force and the time the countdown is drawn for.
+ * in USD, and the main thread's cache with its TTL in force (`isTtlInferred` when guessed, not set
+ * or observed) and the time the countdown is drawn for.
  */
 export type CardView = {
   fill: ContextMeterFill
@@ -156,6 +161,7 @@ export type CardView = {
   cost?: number | null
   cache?: Cache
   ttl?: number
+  isTtlInferred?: boolean
   now?: number
 }
 
@@ -209,16 +215,18 @@ export function minutes (ms: number): string {
   return ms < 60_000 ? '<1m' : span(ms)
 }
 
-const ttlLabel = (ttl: number) => (ttl >= HOUR ? `${ttl / HOUR}h` : `${ttl / 60_000}m`)
+/** `1h`, `5m`; with `?` when inferred rather than set or observed. */
+const ttlLabel = (ttl: number, isInferred = false) =>
+  (ttl >= HOUR ? `${ttl / HOUR}h` : `${ttl / 60_000}m`) + (isInferred ? '?' : '')
 
 /**
  * The cache line: active until the expiry time, with the whole minutes left and the TTL; expired and
  * how many minutes ago; or no cache yet. It changes at most once a minute.
  */
-export function cacheStatus (cache: Cache, ttl: number, now: number, language: Language): string {
+export function cacheStatus (cache: Cache, ttl: number, now: number, language: Language, isTtlInferred = false): string {
   const words = WORDS[language]
   const status = statusOf(cache, ttl, now)
-  if (status.kind === 'active') return words.active(clockTime(cache.last!.at + ttl), minutes(status.left), ttlLabel(ttl))
+  if (status.kind === 'active') return words.active(clockTime(cache.last!.at + ttl), minutes(status.left), ttlLabel(ttl, isTtlInferred))
   if (status.kind === 'expired') return words.expired(minutes(status.ago))
   return words.noCache
 }
@@ -227,11 +235,11 @@ export function cacheStatus (cache: Cache, ttl: number, now: number, language: L
  * The cache rows: its status, then the losses, newest first (at most `maxLosses`), after the /clear
  * marker when there is one; with no loss, a sentence saying so.
  */
-function cacheRows (cache: Cache, ttl: number, now: number, words: Words, language: Language, labelWidth: number, maxLosses: number): Draft[] {
+function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: number, words: Words, language: Language, labelWidth: number, maxLosses: number): Draft[] {
   const label = (text: string): Cell => ({ text: text.padEnd(labelWidth), tone: 'plain' })
   const status = statusOf(cache, ttl, now)
-  const short = status.kind === 'active' ? words.activeShort(clockTime(cache.last!.at + ttl), ttlLabel(ttl)) : undefined
-  const rows: Draft[] = [[label(words.cache), { text: cacheStatus(cache, ttl, now, language), tone: 'plain', short }]]
+  const short = status.kind === 'active' ? words.activeShort(clockTime(cache.last!.at + ttl), ttlLabel(ttl, isTtlInferred)) : undefined
+  const rows: Draft[] = [[label(words.cache), { text: cacheStatus(cache, ttl, now, language, isTtlInferred), tone: 'plain', short }]]
   const marker: Row | undefined = cache.clearedAt === undefined ? undefined
     : [{ text: `${words.clearedAt} ${clockTime(cache.clearedAt)}`, tone: 'dim' }]
   const losses = cache.losses.slice(0, maxLosses)
@@ -253,12 +261,22 @@ function cacheRows (cache: Cache, ttl: number, now: number, words: Words, langua
   return [...rows, ...lines.map((line, i): Draft => [label(i === 0 ? words.losses : ''), ...line])]
 }
 
-/** The cost row: the whole session's cost, subagents included, with its scope said dim. */
-function costRow (usd: number, words: Words, scope: string, labelWidth: number): Row {
+/** `$4.12`; under a cent from its first significant digit, `$0.004`, `$0.0004`. */
+export function usdText (usd: number): string {
+  if (usd >= 0.01) return `$${usd.toFixed(2)}`
+  return `$${usd.toFixed(Math.max(3, -Math.floor(Math.log10(usd))))}`
+}
+
+/**
+ * The cost row: the whole session's cost at list prices, subagents included, then dim what it is
+ * (not billed on a subscription, an estimate otherwise), in full or short where narrow, or left out.
+ */
+function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth: number): Draft {
+  const tail = words.costTail[isSubscription ? 'subscription' : 'list']
   return [
     { text: words.cost.padEnd(labelWidth), tone: 'plain' },
-    { text: `${usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`} `, tone: 'plain' },
-    { text: scope, tone: 'dim' },
+    { text: `≈ ${usdText(usd)}`, tone: 'plain' },
+    { text: ` ${tail.full}`, tone: 'dim', short: ` ${tail.short}` },
   ]
 }
 
@@ -267,12 +285,12 @@ function costRow (usd: number, words: Words, scope: string, labelWidth: number):
  * wide; with them it widens to what they need. The token table takes the widest of its layouts that
  * fits (all five columns, then without Uncached, then without Cache write too); where none fits the
  * table, the hit row and the cost row are left out, so no number is cut. The cost row (only for a
- * cost above zero: a subscription reports 0) takes its full or short scope, or is left out. The
- * cache rows come last, at most `maxLosses` losses, cut at the border where the band is short.
- * Null with no fill.
+ * cost above zero) widens the card to its full form where it can, else takes its short tail, else
+ * shows the amount alone. The cache rows come last, at most `maxLosses` losses, cut at the border
+ * where the band is short. Null with no fill.
  */
 export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES): Card | null {
-  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, now = 0 } = view
+  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, isTtlInferred = false, now = 0 } = view
   if (fill === null) return null
   const words = WORDS[language]
   const mark = fill.isEstimate ? '~' : ''
@@ -289,8 +307,11 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     tokenRows.push([{ text: words.hit.padEnd(labelWidth), tone: 'plain' }, { text: `${Math.round(hit * 100)}% `, tone: 'plain' }, { text: words.hitText, tone: 'dim' }])
   }
   const hasCache = cache !== undefined && (cache.last !== undefined || cache.clearedAt !== undefined)
-  const extra = hasCache ? cacheRows(cache!, ttl, now, words, language, labelWidth, maxLosses) : []
-  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...extra.map(widthOfRow))
+  const extra = hasCache ? cacheRows(cache!, ttl, isTtlInferred, now, words, language, labelWidth, maxLosses) : []
+  const costDraft = table !== undefined && cost !== null && cost > 0
+    ? costRow(cost, cache?.isSubscription === true, words, labelWidth)
+    : undefined
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const figures: Row = [{ text: words.context, tone: 'plain' }]
@@ -301,9 +322,9 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   const rows: Row[] = [figures, [{ text: '━'.repeat(bar.filled), tone: 'meter' }, { text: '─'.repeat(bar.empty), tone: 'dim' }]]
   if (compactAt !== null) rows.push([{ text: `${words.compact} ~${tokens(compactAt)}`, tone: 'dim' }])
   rows.push(...tokenRows)
-  if (table !== undefined && cost !== null && cost > 0) {
-    const fits = [words.scope, words.scopeShort].map(scope => costRow(cost, words, scope, labelWidth)).find(row => widthOfRow(row) <= content)
-    if (fits !== undefined) rows.push(fits)
+  if (costDraft !== undefined) {
+    // The amount always fits where the table does: only its tail shortens or goes.
+    rows.push(shorten(costDraft, content))
   }
   rows.push(...extra.map(row => shorten(row, content)))
 

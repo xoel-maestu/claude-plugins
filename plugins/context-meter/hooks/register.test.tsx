@@ -455,7 +455,7 @@ test('each main-thread response is the last request and adds to the session', as
     'Last request   105.2k   104k         1k            200        500',
     'Session        210.2k   204k         5k            1.2k       2.5k',
     'Cache hit      97% of input read from cache',
-    'Cost           $0.80 (session, all agents)',
+    'Cost           ≈ $0.80 at list prices (session, all agents)',
   ])
 })
 
@@ -555,8 +555,8 @@ test('the band card at 120 columns: the table in full, the cache rows after it',
     ' Last request   2.2M    2M           154.9k        29.8k      85.6k',
     ' Session        2.3M    2.1M         160k          31k        88k',
     ' Cache hit      92% of input read from cache',
-    ' Cost           $4.12 (session, all agents)',
-    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`,
+    ' Cost           ≈ $4.12 at list prices (session, all agents)',
+    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m?)`,
     ' No cache losses this session',
   ])
 })
@@ -572,8 +572,8 @@ test('the band card at 60 columns: Uncached and Cache write left out, none wrapp
     ' Last request   2.2M    2M           85.6k',
     ' Session        2.3M    2.1M         88k',
     ' Cache hit      92% of input read from cache',
-    ' Cost           $4.12 (session, all agents)',
-    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`,
+    ' Cost           ≈ $4.12 (estimate)',
+    ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m?)`,
     ' No cache losses this session',
   ])
 })
@@ -586,8 +586,8 @@ test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on)
     ' Última petición     2.2M      2M            154.9k          29.8k       85.6k',
     ' Sesión              2.3M      2.1M          160k            31k         88k',
     ' Acierto de caché    92% de la entrada leída de caché',
-    ' Coste               $4.12 (sesión, todos los agentes)',
-    ` Caché               activa hasta las ${clockTime(5 * MIN)} (en 5m, TTL 5m)`,
+    ' Coste               ≈ $4.12 a precio de lista (sesión, todos los agentes)',
+    ` Caché               activa hasta las ${clockTime(5 * MIN)} (en 5m, TTL 5m?)`,
     ' Sin pérdidas de caché en esta sesión',
   ])
 })
@@ -615,7 +615,7 @@ test('a loss per cause: a compaction, another model, a pause past the TTL, else 
   await respond($, w, counts(5, 0, 60_000, 10, 'model-b'))
   const at = (minutes: number) => clockTime(minutes * MIN)
   expect(await cacheLines($)).toEqual([
-    `Cache          active until ${clockTime(70 * MIN + 5 * MIN)} (in 5m, TTL 5m)`,
+    `Cache          active until ${clockTime(70 * MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
     `Cache losses   ${at(70)}  −70k   idle 1h07m > TTL`,
     `               ${at(3)}  −80k   model changed`,
     `               ${at(2)}  −90k   /compact`,
@@ -644,12 +644,12 @@ test('the countdown is drawn once a minute, never each second', async ($, on) =>
   const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
   // A subscription: 1h, the line the same through each minute.
   await w.clock.advance(2000)
-  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h)`)
+  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h?)`)
   const before = writes.now
   await w.clock.advance(50_000)
   expect(writes.now).toBe(before)
   await w.clock.advance(10_000)
-  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 58m, TTL 1h)`)
+  expect(await status()).toBe(` Cache          active until ${clockTime(HOUR)} (in 58m, TTL 1h?)`)
   expect(writes.now).toBe(before + 1)
   // Ten minutes: ten writes, not three hundred.
   await w.clock.advance(10 * MIN)
@@ -684,7 +684,7 @@ test('without rate limits the cache lives 5m and then reads as expired', async (
   await respond($, w, counts(5, 0, 50_000, 10))
   const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
   await w.clock.advance(4 * MIN + 30_000)
-  expect(await status()).toBe(` Cache          active until ${clockTime(5 * MIN)} (in <1m, TTL 5m)`)
+  expect(await status()).toBe(` Cache          active until ${clockTime(5 * MIN)} (in <1m, TTL 5m?)`)
   await w.clock.advance(40_000)
   expect(await status()).toBe(' Cache          expired <1m ago')
   await w.clock.advance(MIN)
@@ -695,16 +695,16 @@ test('rate limits that show up after the first request make the TTL 1h, for the 
   const w = world(on, fill(62))
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
-  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`)
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m?)`)
   // The subscription's windows arrive with a later usage read, not with a request.
   w.live.rateLimits = [{ window: 'five_hour' }] as never
   await w.clock.advance(2000)
-  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h)`)
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h?)`)
   // Once seen it stays, even if a later read has none.
   w.live.rateLimits = []
   await w.clock.advance(2000)
   await respond($, w, counts(5, 50_000, 0, 10))
-  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
 })
 
 test('cacheTtl 5m stands on a subscription', { options: { cacheTtl: '5m' } }, async ($, on) => {
@@ -734,7 +734,7 @@ test('auto TTL switches to 1h after a hit past a 5 minute pause', async ($, on) 
   await respond($, w, counts(5, 0, 50_000, 10))
   await w.clock.advance(6 * MIN)
   await respond($, w, counts(5, 50_000, 1000, 10))
-  expect(await cacheLines($)).toEqual([`Cache          active until ${clockTime(6 * MIN + HOUR)} (in 1h00m, TTL 1h)`, 'No cache losses this session'])
+  expect(await cacheLines($)).toEqual([`Cache          active until ${clockTime(6 * MIN + HOUR)} (in 1h00m, TTL 1h?)`, 'No cache losses this session'])
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {
@@ -780,7 +780,7 @@ test('the cache rows in Spanish', { options: { language: 'es' } }, async ($, on)
   await w.clock.advance(10 * MIN)
   await respond($, w, counts(5, 0, 40_000, 10))
   expect(await cacheLines($)).toEqual([
-    `Caché               activa hasta las ${clockTime(15 * MIN)} (en 5m, TTL 5m)`,
+    `Caché               activa hasta las ${clockTime(15 * MIN)} (en 5m, TTL 5m?)`,
     `Pérdidas de caché   ${clockTime(10 * MIN)}  −50k  inactiva 10m > TTL`,
   ])
 })
@@ -799,7 +799,126 @@ test('a reload keeps the cache and its losses in $.state', async ($, on) => {
   world(on, fill(62))
   await startSession($)
   expect(await cacheLines($)).toEqual([
-    `Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h)`,
+    `Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h?)`,
     `Cache losses   ${clockTime(0)}  −112k  idle 1h07m > TTL`,
   ])
+})
+
+// The session transcript the classic hook events point at, served by fs hooks beneath the mod.
+// Synthetic JSONL: usage fields only, no message text.
+const TRANSCRIPT = '/synthetic/session.jsonl'
+const entry = (m5: number, h1: number, extra: Record<string, unknown> = {}) => JSON.stringify({
+  type: 'assistant',
+  isSidechain: false,
+  message: { usage: { cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } } },
+  ...extra,
+})
+/** A transcript beneath the mod: its lines, how often it was read, and a size the stat may report instead. */
+function transcript (on: On) {
+  const file = { lines: [] as string[], reads: 0, size: undefined as number | undefined }
+  const text = () => file.lines.map(line => line + '\n').join('')
+  on('fs.stat', ($, e) => (e.path === TRANSCRIPT
+    ? { value: { kind: 'file', size: file.size ?? text().length, mtimeMs: 0, isLink: false } }
+    : { value: { kind: 'other', size: 0, mtimeMs: 0, isLink: false } }) as never)
+  // No settings hook beneath: each classic event answers nothing of its own.
+  on('classic.SessionStart', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
+  on('classic.Stop', () => ({}))
+  on('fs.read', ($, e) => {
+    if (e.path !== TRANSCRIPT) throw new Error('ENOENT')
+    file.reads += 1
+    return { value: text() } as never
+  })
+  return file
+}
+const startWithTranscript = async ($: Engine) => {
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: TRANSCRIPT } as never)
+}
+const stop = ($: Engine) => $.classic.Stop({ stop_hook_active: false, transcript_path: TRANSCRIPT } as never)
+
+test('the TTL the transcript records for the last main-thread write is shown without ?', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  file.lines.push(entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  // No rate limits: the inference would say 5m?; the transcript says 1h.
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 1h00m, TTL 1h)`)
+  // A pure read keeps it; a subagent's 5m write in the file changes nothing.
+  file.lines.push(entry(0, 0), entry(9000, 0, { isSidechain: true }), 'not json')
+  await respond($, w, counts(5, 50_000, 0, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+  // A later 5m write (usage credits, say) turns it 5m.
+  file.lines.push(entry(800, 0))
+  await respond($, w, counts(5, 50_000, 800, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 5m\)$/)
+})
+
+test('the end of a turn reads the transcript, for a response written after its step', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 5m\?\)$/)
+  file.lines.push(entry(0, 50_000))
+  await stop($)
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+})
+
+test('the transcript is read again only when its size changed, and never past 4 MiB', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  file.lines.push(entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
+  // /context-meter waits for the queued reads.
+  await runCommand($)
+  expect(file.reads).toBe(1)
+  file.size = 4 * 1024 * 1024 + 1
+  file.lines.push(entry(800, 0))
+  await respond($, w, counts(5, 50_000, 800, 10))
+  await stop($)
+  await runCommand($)
+  expect(file.reads).toBe(1)
+  // The TTL last observed stands.
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+})
+
+test('an explicit cacheTtl beats the observed TTL', { options: { cacheTtl: '5m' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  file.lines.push(entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`)
+})
+
+test("a subagent's classic event does not move the transcript path", async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  await $.classic.UserPromptSubmit({ prompt: 'synthetic', transcript_path: '/synthetic/other.jsonl', agent_id: 'a1' } as never)
+  file.lines.push(entry(0, 50_000))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+})
+
+test('on a subscription the cost reads at API list prices, not billed', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  w.live.cost = { usd: 0.004 }
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+})
+
+test('the subscription cost row in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  w.live.cost = { usd: 0.004 }
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await tokenLines($)).at(-1)).toBe('Coste               ≈ $0.004 a precio de lista de la API (no se factura en tu plan)')
 })

@@ -2,7 +2,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TurnUsage } from 'claude-code'
 
-import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, cleared, markCompact, observe, since, statusOf, ttlOf } from './cache'
+import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, cleared, markCompact, observe, observeTtl, since, statusOf, ttlInfo, ttlOf } from './cache'
 import type { Cache } from './cache'
 
 const MIN = 60_000
@@ -119,4 +119,32 @@ test('observing leaves the cache it was given as it was', () => {
   const before = after(100_000)
   observe(before, usage(0, 1000), MIN, true, 'auto')
   expect(before).toEqual(after(100_000))
+})
+
+test('TTL precedence: an explicit setting, then the observed TTL, then the inference (marked inferred)', () => {
+  const subscription = { ...EMPTY, isSubscription: true }
+  expect(ttlInfo(subscription, 'auto')).toEqual({ ttl: HOUR, isInferred: true })
+  expect(ttlInfo(EMPTY, 'auto')).toEqual({ ttl: FIVE_MINUTES, isInferred: true })
+  // Observed beats the inference both ways.
+  expect(ttlInfo({ ...subscription, observedTtl: '5m' }, 'auto')).toEqual({ ttl: FIVE_MINUTES, isInferred: false })
+  expect(ttlInfo({ ...EMPTY, observedTtl: '1h' }, 'auto')).toEqual({ ttl: HOUR, isInferred: false })
+  // An explicit setting beats what was observed.
+  expect(ttlInfo({ ...EMPTY, observedTtl: '1h' }, '5m')).toEqual({ ttl: FIVE_MINUTES, isInferred: false })
+  expect(ttlInfo({ ...EMPTY, observedTtl: '5m' }, '1h')).toEqual({ ttl: HOUR, isInferred: false })
+  expect(ttlOf({ ...EMPTY, observedTtl: '1h' }, 'auto')).toBe(HOUR)
+})
+
+test('an observed TTL is stored; a pure read (null) keeps the one before; /clear forgets it', () => {
+  const seen = observeTtl(EMPTY, '1h')
+  expect(seen.observedTtl).toBe('1h')
+  expect(observeTtl(seen, null)).toBe(seen)
+  expect(observeTtl(seen, '1h')).toBe(seen)
+  expect(observeTtl(seen, '5m').observedTtl).toBe('5m')
+  expect(cleared(5).observedTtl).toBeUndefined()
+})
+
+test('the observed TTL judges an idle loss: 6 minutes under an observed 1h is not expired', () => {
+  const cache = after(100_000, 0, 'model-a', { observedTtl: '1h' })
+  expect(observe(cache, usage(0, 100_000), 6 * MIN, false, 'auto').losses[0]?.cause).toBe('invalidated')
+  expect(observe({ ...cache, observedTtl: '5m', isSubscription: true }, usage(0, 100_000), 6 * MIN, true, 'auto').losses[0]?.cause).toBe('expired')
 })

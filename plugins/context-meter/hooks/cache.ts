@@ -1,6 +1,6 @@
 import type { TurnUsage } from 'claude-code'
 
-import type { ContextMeterCache, ContextMeterLoss } from '../types'
+import type { ContextMeterCache, ContextMeterLoss, ContextMeterTtl } from '../types'
 
 export type Cache = ContextMeterCache
 export type Loss = ContextMeterLoss
@@ -16,12 +16,27 @@ export const HISTORY = 10
 /** No request yet. */
 export const EMPTY: Cache = { isCompactPending: false, isSubscription: false, isLongSeen: false, losses: [] }
 
-/** The TTL in force: the setting, or under `auto` 1h on a subscription or once a hit showed it, 5m otherwise. */
-export function ttlOf (cache: Cache, setting: TtlSetting): number {
-  if (setting === '5m') return FIVE_MINUTES
-  if (setting === '1h') return HOUR
-  return cache.isSubscription || cache.isLongSeen ? HOUR : FIVE_MINUTES
+export type Ttl = ContextMeterTtl
+
+const msOf = (ttl: Ttl) => (ttl === '1h' ? HOUR : FIVE_MINUTES)
+
+/**
+ * The TTL in force and whether it is inferred: the setting when explicit; else the TTL the
+ * transcript showed the last cache write used; else inferred (1h on a subscription or once a hit
+ * past a 5 minute pause showed it, 5m otherwise).
+ */
+export function ttlInfo (cache: Cache, setting: TtlSetting): { ttl: number; isInferred: boolean } {
+  if (setting !== 'auto') return { ttl: msOf(setting), isInferred: false }
+  if (cache.observedTtl !== undefined) return { ttl: msOf(cache.observedTtl), isInferred: false }
+  return { ttl: cache.isSubscription || cache.isLongSeen ? HOUR : FIVE_MINUTES, isInferred: true }
 }
+
+/** The TTL in force, in milliseconds (see ttlInfo). */
+export const ttlOf = (cache: Cache, setting: TtlSetting): number => ttlInfo(cache, setting).ttl
+
+/** The TTL the transcript showed for the last main-thread cache write; null (a pure read) keeps the one before. */
+export const observeTtl = (cache: Cache, ttl: Ttl | null): Cache =>
+  ttl === null || cache.observedTtl === ttl ? cache : { ...cache, observedTtl: ttl }
 
 /**
  * A main-thread response at `at`: a loss when the previous prefix was over 1024 tokens and less than
