@@ -41,11 +41,16 @@ export type ContextMeterLoss = {
   gap: number
 }
 
+/** A prompt cache lifetime. */
+export type ContextMeterTtl = '5m' | '1h'
+
 /**
  * The main thread's prompt cache this session: the previous request's cached prefix (cache read
  * plus cache write), model and time; whether a main-thread compaction came since; whether the
  * session has rate limits (a subscription) and whether a hit past a 5 minute pause showed a 1h TTL;
- * the 10 newest losses, newest first; when /clear started it over. `startedAt` as in the ledger.
+ * the TTL the last main-thread cache write used, as the session transcript records it
+ * (`observedTtl`, absent until one is read); the 10 newest losses, newest first; when /clear
+ * started it over. `startedAt` as in the ledger.
  */
 export type ContextMeterCache = {
   startedAt?: number
@@ -53,6 +58,7 @@ export type ContextMeterCache = {
   isCompactPending: boolean
   isSubscription: boolean
   isLongSeen: boolean
+  observedTtl?: ContextMeterTtl
   losses: ContextMeterLoss[]
   clearedAt?: number
 }
