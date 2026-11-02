@@ -7,7 +7,8 @@ import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, readSubsc
 import type { TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
-import { barOf, fit, label } from './fit'
+import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
+import type { Hides } from './fit'
 import { EMPTY, add, since } from './ledger'
 import { MAX_READ, TAIL, completeLines, lastResponse } from './transcript'
 
@@ -31,6 +32,8 @@ const FOOTER = 4 + 2 + 20
 // The hover group the meter (in SessionMode) and its card (in AbovePrompt) share: a pointer on
 // either lights both, so the card shows while the meter or the card itself is under it.
 const SCOPE = 'context-meter'
+// sub-meter's meter Box in the footer; beside it this meter stays first (see the SessionMode hook).
+const SUB_KEY = 'sub-meter'
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
 // point was read for and whether it is to be read again, the stretch (bumped by every figure,
@@ -77,6 +80,24 @@ function widthOfNode (node: RenderNode | undefined, modes: readonly string[]): n
   if (props.position === 'absolute' || props.display === 'none') return 0
   const children = (node.children ?? []) as RenderNode[]
   return children.reduce((sum, child) => sum + widthOfNode(child, modes), 0)
+}
+
+const isSeparator = (node: RenderNode | undefined) =>
+  typeof node === 'object' && node !== null && node.type === 'Text' && (node.children ?? []).join('') === SEPARATOR
+
+/** A drawing without the Box keyed `key` and the separator drawn after it; as it came when it holds none. */
+function without (node: RenderNode | undefined, key: string): RenderNode | undefined {
+  if (node === undefined || node === null || typeof node === 'string' || node.type !== 'Box') return node
+  if (node.props?.key === key) return undefined
+  const children = (node.children ?? []) as RenderNode[]
+  for (const [i, child] of children.entries()) {
+    const rest = without(child, key)
+    if (rest === child) continue
+    const after = children.slice(i + 1)
+    const kept = [...children.slice(0, i), ...(rest === undefined ? [] : [rest]), ...(isSeparator(after[0]) ? after.slice(1) : after)]
+    return { ...node, children: kept }
+  }
+  return node
 }
 
 /** Columns the footer leaves at its right end on the terminal; no limit elsewhere. */
@@ -427,9 +448,13 @@ export const register: Register = (on, options) => {
   })
 
   // The hint line beside the mode label: its width says how much of the row is left. Drawn as it is.
-  on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
+  // sub-meter drops parts of it; where this hook is outer it sees the line before that, so it
+  // measures the line as sub-meter draws it (its `hides`, absent without sub-meter).
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (e.surface === 'terminal') {
-      const width = widthOf(e.props.hint)
+      const held = await $.state.get({ plugin: 'sub-meter', key: 'hides' } as never).catch(() => undefined)
+      const hides = (held as { value?: Hides | null } | undefined)?.value
+      const width = widthOf(hides ? tidy(e.props.hint, hides) : e.props.hint)
       if (width !== hintWidth) {
         hintWidth = width
         $.ui.invalidate('ui.render')
@@ -441,17 +466,27 @@ export const register: Register = (on, options) => {
   // Bottom right of the footer: the meter, then whatever is beneath it (the engine's mode labels,
   // another plugin's drawing). Where the row is short it drops its bar, then its prefix, then itself.
   // The card is not drawn here: the footer clips what rises above it to about four rows.
+  // Beside sub-meter (it has a reading) the meter stays first: drawn before sub-meter's Box when that
+  // is beneath, taken out and put first by sub-meter when this one is beneath it. The room is counted
+  // without sub-meter's meter, and the bar needs room for sub-meter's least form too, so the row is
+  // the same whichever wraps the other.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, beneath] = await Promise.all([read($, fill), next(e)])
+    const [shown, beneath, sub] = await Promise.all([
+      read($, fill), next(e),
+      $.state.get({ plugin: 'sub-meter', key: 'reading' } as never).catch(() => undefined),
+    ])
     if (shown === null) return beneath
 
     const text = label(shown.percent, shown.isEstimate)
-    const hasBeneath = e.props.modes.length > 0 || !isBlank(beneath)
-    const room = roomOf(e) - (hasBeneath ? widthOfNode(beneath, e.props.modes) + SEPARATOR.length : 0)
-    const form = fit(room, text)
+    const rest = without(beneath, SUB_KEY)
+    const hasRest = e.props.modes.length > 0 || !isBlank(rest)
+    const room = roomOf(e) - (hasRest ? widthOfNode(rest, e.props.modes) + SEPARATOR.length : 0)
+    const isSubOn = ((sub as { value?: { windows?: unknown[] } | null } | undefined)?.value?.windows?.length ?? 0) > 0
+    const form = fit(room, text, isSubOn ? SEPARATOR.length + SUB_LEAST : 0)
     if (form === null) return beneath
 
     const { Box, Text } = $.ui.resolve(e)
+    const hasBeneath = e.props.modes.length > 0 || !isBlank(beneath)
     const color = colorFor(shown.percent)
     const bar = barOf(shown.percent, text)
 

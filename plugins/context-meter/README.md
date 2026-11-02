@@ -52,7 +52,8 @@ The headers always show. On a band too narrow for even Input, Cache read and Out
 - **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them. **Input** is all the input: **Cache read** (served by the prompt cache), **Cache write** (written to it) and **Uncached** (the API's `input_tokens`). **Output** is the response. **Cost** is on its own row: the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is a client-side estimate at API list prices, not a bill ([Claude Code costs](https://code.claude.com/docs/en/costs.md)): on a subscription (rate limits seen) it reads `≈ $0.004 at API list prices (not billed on your plan)`, since it is not what the plan charges; otherwise `≈ $4.12 at list prices (session, all agents)`. Two decimals from a cent (an amount that rounds to one, `0.00999`, reads `$0.01`); under a cent from the first significant digit (`$0.004`, `$0.0004`). Whether the session is a subscription is kept across `/clear` and stored in `$.store` (`isSubscription`, the last reading), so a new or resumed session uses it until its own reading arrives: rate limits seen (subscription), or none by its second main-thread response (API key; once seen, rate limits stand for the session). Where the band is narrow the tail shortens to `(not billed)` or `(estimate)`, and where even that does not fit only the amount stays; a word is never cut. The row is left out when the host reports no cost, a cost of 0 or a non-finite one. **Cache hit** is cache read over Input for the session. Before the first response these rows are left out, never shown as zeros.
 - **Cache** and **Cache losses**: see below.
 - The counts live in `$.state` (`ledger`), so a reload of the plugin keeps them. They count from the session's start (`$.session.usage().startedAt`): `/clear` empties them, and a ledger written for another start is dropped.
-- Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most.
+- Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most. Hidden and out-of-flow nodes beneath take no room.
+- Beside [sub-meter](../sub-meter) the meter comes first (`ctx … · 5h … · <modes>`) whichever plugin wraps the other, and keeps its bar only while the row also holds a separator and sub-meter's least form (8 columns). It reads sub-meter's `$.state` (`reading`, `hides`) to know sub-meter draws and which hint parts it drops; see [sub-meter's README](../sub-meter/README.md#beside-context-meter).
 
 ## Options (`/config`)
 
@@ -118,3 +119,7 @@ claude plugin test plugins/context-meter
 `tsc -p` reads `.claude-plugin/types/`, which the engine writes when it loads the folder with `--plugin-dir`.
 
 Inspired by the `SessionMode` pattern of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT); the code is written from scratch.
+
+## License
+
+MIT © Xoel García Maestu
