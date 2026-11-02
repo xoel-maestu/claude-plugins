@@ -168,12 +168,12 @@ test('the cost row on a subscription: at API list prices, not billed on the plan
 })
 
 test('amounts: two decimals from a cent, sub-cent from the first significant digit', () => {
-  expect([4.123, 0.01, 0.0042, 0.004, 0.0004, 0.00999].map(usdText)).toEqual(['$4.12', '$0.01', '$0.004', '$0.004', '$0.0004', '$0.010'])
+  expect([4.123, 0.01, 0.0042, 0.004, 0.0004, 0.00999].map(usdText)).toEqual(['$4.12', '$0.01', '$0.004', '$0.004', '$0.0004', '$0.01'])
   expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.004 at list prices (session, all agents)')
 })
 
-test('a cost of zero (a subscription) or none gives no cost row', () => {
-  for (const cost of [0, null, undefined]) {
+test('a cost of zero (a subscription) , none or a non-finite one gives no cost row', () => {
+  for (const cost of [0, null, undefined, Infinity, NaN]) {
     const rows = trimmed(cardOf({ ...WITH_TOKENS, cost }, 'en', 115))
     expect(rows.at(-1)).toBe('Cache hit      92% of input read from cache')
     expect(rows.some(line => line.includes('$'))).toBe(false)
