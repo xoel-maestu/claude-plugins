@@ -91,7 +91,7 @@ tsc -p plugins/context-meter
 
 ## Credits
 
-Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). The code is written from scratch.
+Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 
 ## License
 

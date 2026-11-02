@@ -101,7 +101,7 @@ tsc -p plugins/sub-meter
 
 ## Credits
 
-Inspired by the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). The code is written from scratch.
+Inspired by the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 
 ## License
 

@@ -53,7 +53,7 @@ CI does not run `tsc`. The type definitions a plugin compiles against (`.claude-
 
 ## Credits
 
-The idea of meters drawn in the prompt footer comes from [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). The code here is written from scratch.
+The idea of meters drawn in the prompt footer comes from [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 
 ## License
 
