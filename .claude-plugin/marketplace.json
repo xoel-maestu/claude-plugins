@@ -1,0 +1,19 @@
+{
+  "name": "xoel-plugins",
+  "owner": {
+    "name": "Xoel García Maestu",
+    "url": "https://github.com/xoel-maestu"
+  },
+  "metadata": {
+    "description": "Claude Code mods by Xoel García Maestu: context-meter, the context window fill at the bottom right with a detail card on hover."
+  },
+  "plugins": [
+    {
+      "name": "context-meter",
+      "source": "./plugins/context-meter",
+      "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
+      "version": "0.1.0",
+      "category": "productivity"
+    }
+  ]
+}
