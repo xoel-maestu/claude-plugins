@@ -263,7 +263,8 @@ function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: numb
 
 /** `$4.12`; under a cent from its first significant digit, `$0.004`, `$0.0004`. */
 export function usdText (usd: number): string {
-  if (usd >= 0.01) return `$${usd.toFixed(2)}`
+  // Rounded first, so an amount that rounds up to a cent (0.00999) reads as cents.
+  if (Number(usd.toFixed(2)) >= 0.01) return `$${usd.toFixed(2)}`
   return `$${usd.toFixed(Math.max(3, -Math.floor(Math.log10(usd))))}`
 }
 
@@ -308,7 +309,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   }
   const hasCache = cache !== undefined && (cache.last !== undefined || cache.clearedAt !== undefined)
   const extra = hasCache ? cacheRows(cache!, ttl, isTtlInferred, now, words, language, labelWidth, maxLosses) : []
-  const costDraft = table !== undefined && cost !== null && cost > 0
+  const costDraft = table !== undefined && cost !== null && Number.isFinite(cost) && cost > 0
     ? costRow(cost, cache?.isSubscription === true, words, labelWidth)
     : undefined
   const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow))
