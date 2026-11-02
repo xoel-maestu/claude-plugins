@@ -35,6 +35,8 @@ const SCOPE = 'context-meter'
 let timer: Timer | undefined
 let ttlSetting: TtlSetting = 'auto'
 let drawnStatus = ''
+// Whether the cache has a request to show; while it has none the tick reads nothing.
+let hasCache = false
 let isCounting = false
 let countedWindow = 0
 let isCompactAtStale = true
@@ -136,7 +138,9 @@ async function showCost ($: EngineInterface, next: SessionCost | undefined) {
 async function keepSession ($: EngineInterface, startedAt: number) {
   const [kept, cached] = await Promise.all([read($, ledger), read($, cache)])
   if (since(kept, startedAt) !== kept) await update($, ledger, () => ({ ...EMPTY, startedAt }))
-  if (cacheSince(cached, startedAt) !== cached) await update($, cache, state => cacheSince(state, startedAt))
+  const current = cacheSince(cached, startedAt)
+  if (current !== cached) await update($, cache, state => cacheSince(state, startedAt))
+  hasCache = current.last !== undefined
 }
 
 /** The recordings of main-thread responses, one after another. */
@@ -150,6 +154,7 @@ async function record ($: EngineInterface, usage: TurnUsage) {
   const [{ startedAt, cost: spent, rateLimits }, now] = await Promise.all([$.session.usage(), $.clock.now()])
   await update($, ledger, state => add(since(state, startedAt), usage, now))
   await update($, cache, state => observe(cacheSince(state, startedAt), usage, now, rateLimits.length > 0, ttlSetting))
+  hasCache = true
   await showCost($, spent)
 }
 
@@ -167,6 +172,7 @@ async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
  * runs on hover, so the card cannot know whether it is shown.
  */
 async function tick ($: EngineInterface) {
+  if (!hasCache) return
   const [cached, now] = await Promise.all([read($, cache), $.clock.now()])
   const line = cacheStatus(cached, ttlOf(cached, ttlSetting), now, 'en')
   if (line === drawnStatus) return
@@ -201,6 +207,7 @@ export const register: Register = (on, options) => {
 
   stopTimers()
   drawnStatus = ''
+  hasCache = false
   recording = Promise.resolve()
   isCounting = false
   countedWindow = 0
@@ -235,6 +242,7 @@ export const register: Register = (on, options) => {
       enqueue(async () => {
         const now = await $.clock.now()
         await update($, cache, () => cleared(now))
+        hasCache = false
       })
     } else {
       stopTimers()
