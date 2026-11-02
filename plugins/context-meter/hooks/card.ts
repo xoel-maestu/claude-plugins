@@ -112,8 +112,11 @@ export function tokens (n: number): string {
   return String(Math.round(n))
 }
 
-/** How a piece of a row is drawn: in the meter's color, as the theme's text, or dim. */
-export type Tone = 'meter' | 'plain' | 'dim'
+/**
+ * How a piece of a row is drawn: in the meter's color (warning, error; the theme's text below them),
+ * as the bar (the meter's color, the theme's `claude` below them), as the theme's text, or dim.
+ */
+export type Tone = 'meter' | 'bar' | 'plain' | 'dim'
 export type Cell = { text: string; tone: Tone }
 /** One row of the card: its pieces, left to right, together exactly as wide as the content. */
 export type Row = Cell[]
@@ -320,7 +323,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   figures.push({ text: `${GAP}${mark}${Math.round(fill.percent)}%`, tone: 'meter' })
 
   const bar = split(fill.percent, content)
-  const rows: Row[] = [figures, [{ text: '━'.repeat(bar.filled), tone: 'meter' }, { text: '─'.repeat(bar.empty), tone: 'dim' }]]
+  const rows: Row[] = [figures, [{ text: '━'.repeat(bar.filled), tone: 'bar' }, { text: '─'.repeat(bar.empty), tone: 'dim' }]]
   if (compactAt !== null) rows.push([{ text: `${words.compact} ~${tokens(compactAt)}`, tone: 'dim' }])
   rows.push(...tokenRows)
   if (costDraft !== undefined) {
