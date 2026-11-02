@@ -26,7 +26,7 @@ export function cardOf (fill: ContextMeterFill, compactAt: number | null, langua
   if (fill === null) return null
   const words = WORDS[language]
   const mark = fill.isEstimate ? '~' : ''
-  const parts = [words.context]
+  const parts: string[] = [words.context]
   if (fill.tokens !== undefined) parts.push(`${mark}${tokens(fill.tokens)} / ${tokens(fill.window)}`)
   parts.push(`${mark}${Math.round(fill.percent)}%`)
   let line = parts.join('  ')
