@@ -41,9 +41,11 @@ export const observeTtl = (cache: Cache, ttl: Ttl | null): Cache =>
   ttl === null || cache.observedTtl === ttl ? cache : { ...cache, observedTtl: ttl }
 
 /**
- * A main-thread response at `at`: a loss when the previous prefix was over 1024 tokens and less than
- * half of it was read back, with the first cause that holds (a compaction since, another model, a
- * pause past the TTL, else invalidated). `isSubscription` says the session has rate limits.
+ * A main-thread response at `at`: a loss when the previous prefix was over 1024 tokens and more than
+ * 1024 of its tokens were not read back (a normal request reads the whole previous prefix, so a
+ * partial loss, such as a compaction that keeps the system prompt and tools, counts too), with the
+ * first cause that holds (a compaction since, another model, a pause past the TTL, else
+ * invalidated). `isSubscription` says the session has rate limits.
  */
 export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscription: boolean, setting: TtlSetting): Cache {
   const base = isSubscription ? { ...cache, isSubscription: true, isSubscriptionKnown: true } : cache
@@ -57,8 +59,8 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
   if (previous === undefined || previous.prefix <= THRESHOLD) return next
 
   const gap = at - previous.at
-  if (read >= previous.prefix / 2) {
-    // A hit past 5 minutes: the cache lives an hour.
+  if (previous.prefix - read <= THRESHOLD) {
+    // A hit (the previous prefix read back) past 5 minutes: the cache lives an hour.
     return gap > FIVE_MINUTES ? { ...next, isLongSeen: true } : next
   }
   const cause: Loss['cause'] = cache.isCompactPending ? 'compact'

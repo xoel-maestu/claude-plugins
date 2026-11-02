@@ -19,15 +19,22 @@ test('the first request sets the prefix and records no loss', () => {
   expect(one.losses).toEqual([])
 })
 
-test('a read under half the previous prefix is a loss of the prefix less what was read', () => {
+test('a read short of the previous prefix is a loss of the prefix less what was read', () => {
   const next = observe(after(100_000), usage(20_000, 90_000), MIN, false, 'auto')
   expect(next.losses).toEqual([{ at: MIN, lost: 80_000, cause: 'invalidated', gap: MIN }])
   expect(next.last).toEqual({ prefix: 110_000, model: 'model-a', at: MIN })
 })
 
-test('the P/2 rule: half the prefix read is no loss, a token less is', () => {
-  expect(observe(after(100_000), usage(50_000, 60_000), MIN, false, 'auto').losses).toEqual([])
-  expect(observe(after(100_000), usage(49_999, 60_000), MIN, false, 'auto').losses).toHaveLength(1)
+test('the P − 1024 rule: 1024 tokens not read back is no loss, a token more is', () => {
+  expect(observe(after(100_000), usage(100_000, 2000), MIN, false, 'auto').losses).toEqual([])
+  expect(observe(after(100_000), usage(98_976, 2000), MIN, false, 'auto').losses).toEqual([])
+  expect(observe(after(100_000), usage(98_975, 2000), MIN, false, 'auto').losses).toEqual([{ at: MIN, lost: 1025, cause: 'invalidated', gap: MIN }])
+})
+
+test('a partial loss counts: after /compact the system prompt and tools are read, the conversation is written', () => {
+  // A real session: read 31.9k + written 17.4k, then after /compact read 29.3k and written 21.2k.
+  const next = observe(markCompact(after(31_900 + 17_400)), usage(29_300, 21_200), MIN, false, 'auto')
+  expect(next.losses).toEqual([{ at: MIN, lost: 20_000, cause: 'compact', gap: MIN }])
 })
 
 test('the 1024 threshold: a prefix of 1024 tokens or fewer loses nothing', () => {
@@ -50,7 +57,7 @@ test('causes, first match: a compaction, then the model, then the TTL, then inva
 })
 
 test('a compaction marked with no loss after it is used up all the same', () => {
-  const next = observe(markCompact(after(100_000)), usage(90_000, 10_000), MIN, false, 'auto')
+  const next = observe(markCompact(after(100_000)), usage(100_000, 10_000), MIN, false, 'auto')
   expect(next.losses).toEqual([])
   expect(next.isCompactPending).toBe(false)
 })
@@ -80,6 +87,9 @@ test('TTL auto switches to 1h after a hit past a 5 minute pause, for the rest of
   expect(hit.losses).toEqual([])
   expect(hit.isLongSeen).toBe(true)
   expect(ttlOf(hit, 'auto')).toBe(HOUR)
+  // A read short of the prefix by up to 1024 tokens is a hit too; by more it is a loss and says nothing.
+  expect(observe(after(100_000), usage(98_976, 1000), 6 * MIN, false, 'auto').isLongSeen).toBe(true)
+  expect(observe(after(100_000), usage(60_000, 1000), 6 * MIN, false, 'auto').isLongSeen).toBe(false)
   // A hit within 5 minutes says nothing.
   expect(observe(after(100_000), usage(100_000, 1000), 4 * MIN, false, 'auto').isLongSeen).toBe(false)
   // Under explicit 5m the setting stands.
