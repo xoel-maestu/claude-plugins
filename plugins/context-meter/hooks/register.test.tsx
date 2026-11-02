@@ -167,6 +167,14 @@ test('shows nothing with neither a figure nor a breakdown', async ($, on) => {
   expect(await (await footer($)).find({ key: 'context-meter' })).toBeUndefined()
 })
 
+test('the estimate is measured against the context window, as the figure is', async ($, on) => {
+  // A compaction window of 160k: the breakdown says 20%, the meter shows 32k over 200k.
+  world(on, fill(), { percentage: 20, totalTokens: 32_000, raw: 160_000 })
+  await startSession($)
+  const result = await runCommand($)
+  expect(result.text?.split('\n')[0]).toBe('Context  ~32k / 200k  ~16%')
+})
+
 test('the hover card: hidden, above the meter, with the autocompact point', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
