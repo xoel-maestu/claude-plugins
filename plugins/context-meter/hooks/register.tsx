@@ -17,10 +17,12 @@ const SEPARATOR = ' · '
 const FOOTER = 4 + 2 + 20
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
-// point was read for, and the hint line's width as last drawn on the terminal.
+// point was read for, the stretch (bumped by every figure, so a count that began before one is
+// stale), and the hint line's width as last drawn on the terminal.
 let timer: Timer | undefined
 let isCounting = false
 let countedWindow = 0
+let stretch = 0
 let hintWidth = 0
 
 /** Columns a text takes: one per character, none for a variation selector. */
@@ -74,6 +76,7 @@ const estimateOf = (tokens: number, window: number): ContextMeterFill =>
 async function sync ($: EngineInterface, context: SessionContextUsage, canCount: boolean) {
   const hasFigure = context.percent !== undefined
   if (hasFigure) {
+    stretch += 1
     await show($, { percent: context.percent!, tokens: context.tokens, window: context.window, isEstimate: false })
   }
   const current = await read($, fill)
@@ -82,12 +85,14 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
   if (!canCount || isCounting || !(needsEstimate || needsCompactAt)) return
 
   isCounting = true
+  const countedIn = stretch
   try {
     const { breakdown } = (await $.session.usage({ breakdown: 'summary' })).context
     countedWindow = context.window
     const threshold = breakdown?.isAutoCompactEnabled ? breakdown.autoCompactThreshold ?? null : null
     if ((await read($, compactAt)) !== threshold) await update($, compactAt, () => threshold)
-    if (needsEstimate) {
+    // A figure that came in while counting stands: the estimate is dropped.
+    if (needsEstimate && stretch === countedIn) {
       await show($, breakdown
         ? estimateOf(breakdown.totalTokens, context.window)
         : null)
@@ -115,6 +120,7 @@ export const register: Register = (on, options) => {
   timer = undefined
   isCounting = false
   countedWindow = 0
+  stretch = 0
   hintWidth = 0
 
   on('session.start', async ($, e, next) => {
