@@ -6,17 +6,22 @@ export const DURATIONS: Record<SubMeterWindow['kind'], number> = { five_hour: 5 
 /** Before this much of the window has run, a projection says nothing. */
 const LEAST_ELAPSED = 10 * 60_000
 
-/** Where the window gets at its pace so far: to 100% at `at` (before the reset), or not before the reset. */
-export type Pace = { isReaching: true; at: number } | { isReaching: false }
+/**
+ * Where the window gets at its pace so far: to 100% at `at` (before the reset), not before the
+ * reset, or already there (`isFull`).
+ */
+export type Pace = { isReaching: true; at: number } | { isReaching: false } | { isFull: true }
 
 /**
  * The window's projection at a steady pace: `percent / elapsed` so far, with `elapsed` the duration
- * less the time to the reset. Null without a reset time, past it, at 0%, or in its first 10 minutes.
+ * less the time to the reset. Full at 100% or more. Null without a reset time, past it, at 0%, or
+ * (below 100%) in its first 10 minutes.
  */
 export function paceOf (window: SubMeterWindow, now: number): Pace | null {
   if (window.resetsAt === undefined || window.percentUsed <= 0) return null
   const reset = Date.parse(window.resetsAt)
   if (!Number.isFinite(reset) || reset <= now) return null
+  if (window.percentUsed >= 100) return { isFull: true }
   const elapsed = DURATIONS[window.kind] - (reset - now)
   if (elapsed < LEAST_ELAPSED) return null
   const full = now + ((100 - window.percentUsed) * elapsed) / window.percentUsed

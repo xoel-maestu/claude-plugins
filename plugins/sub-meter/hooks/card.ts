@@ -47,6 +47,7 @@ type Words = {
   reset: string
   reaches: (name: string, time: string) => string
   notReaching: (name: string) => string
+  full: (name: string) => string
   /** Before a pace sentence, dropped where the band is short. */
   atThisPace: string
   ago: (ago: string, isThis: boolean) => Tail
@@ -66,6 +67,7 @@ const WORDS: Record<Language, Words> = {
     reset: 'reset',
     reaches: (name, time) => `${name} reaches 100% ${time}`,
     notReaching: name => `${name} won't reach 100% before reset`,
+    full: name => `${name} is already at 100%`,
     atThisPace: 'at this pace, ',
     ago: (ago, isThis) => ({ full: `${ago} ago (${isThis ? 'this' : 'another'} session)`, short: `${ago} ago` }),
   },
@@ -82,6 +84,7 @@ const WORDS: Record<Language, Words> = {
     reset: 'reiniciada',
     reaches: (name, time) => `${name} llega al 100% ${time}`,
     notReaching: name => `${name} no llega al 100% antes del reinicio`,
+    full: name => `${name} ya está al 100%`,
     atThisPace: 'a este ritmo, ',
     ago: (ago, isThis) => ({ full: `hace ${ago} (${isThis ? 'esta' : 'otra'} sesión)`, short: `hace ${ago}` }),
   },
@@ -161,6 +164,10 @@ export function cardOf (view: CardView, language: Language, width = Infinity): C
   const paces = reading.windows.flatMap(w => {
     const pace = paceOf(w, now)
     if (pace === null) return []
+    if ('isFull' in pace) {
+      const full = words.full(words.names[w.kind])
+      return [{ full, short: full }]
+    }
     const sentence = pace.isReaching
       ? words.reaches(words.names[w.kind], clockOf(pace.at, now, words, words.paceTime))
       : words.notReaching(words.names[w.kind])
