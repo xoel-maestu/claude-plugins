@@ -471,9 +471,10 @@ export const register: Register = (on, options) => {
   // without sub-meter's meter, and the bar needs room for sub-meter's least form too, so the row is
   // the same whichever wraps the other.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, beneath, sub] = await Promise.all([
+    const [shown, beneath, sub, now] = await Promise.all([
       read($, fill), next(e),
       $.state.get({ plugin: 'sub-meter', key: 'reading' } as never).catch(() => undefined),
+      $.clock.now(),
     ])
     if (shown === null) return beneath
 
@@ -481,7 +482,9 @@ export const register: Register = (on, options) => {
     const rest = without(beneath, SUB_KEY)
     const hasRest = e.props.modes.length > 0 || !isBlank(rest)
     const room = roomOf(e) - (hasRest ? widthOfNode(rest, e.props.modes) + SEPARATOR.length : 0)
-    const isSubOn = ((sub as { value?: { windows?: unknown[] } | null } | undefined)?.value?.windows?.length ?? 0) > 0
+    // sub-meter draws its reading while a window of it is not past its reset (one without a reset time never is).
+    const windows = (sub as { value?: { windows?: { resetsAt?: unknown }[] } | null } | undefined)?.value?.windows ?? []
+    const isSubOn = windows.some(w => typeof w.resetsAt !== 'string' || !(Date.parse(w.resetsAt) <= now))
     const form = fit(room, text, isSubOn ? SEPARATOR.length + SUB_LEAST : 0)
     if (form === null) return beneath
 

@@ -3,15 +3,19 @@ import type { EngineInterface, Register, RenderNode, RenderViewport, Timer } fro
 
 import type { SubMeterReading, SubMeterWindow } from '../types'
 
+import { cardOf, cardText } from './card'
+import type { Tone } from './card'
 import { BETWEEN, SEPARATOR, columns, contextWidth, fit, split, tidy } from './fit'
 import type { Hides, Piece } from './fit'
-import { newer, percentAt, readingOf, resetIn, shown, until, windowsOf } from './limits'
+import { isStale, newer, percentAt, readingOf, resetIn, shown, until, windowsOf } from './limits'
 import type { Display } from './limits'
 
 const reading = atom({ plugin: 'sub-meter', key: 'reading' } as const, null as SubMeterReading)
 const hides = atom({ plugin: 'sub-meter', key: 'hides' } as const, null as Hides | null)
 const turn = atom({ plugin: 'sub-meter', key: 'turn' } as const, 0)
 const tick = atom({ plugin: 'sub-meter', key: 'tick' } as const, 0)
+// The time the hover card is drawn for: written by the tick only when the card's text changes.
+const drawnAt = atom({ plugin: 'sub-meter', key: 'now' } as const, 0)
 
 // The `$.store` key every session writes its reading to and reads the others' from.
 const STORED = 'reading'
@@ -20,6 +24,8 @@ const SYNC_MS = 8000
 // the hint and what is drawn at the right, and the permission mode label (`⏵⏵ accept edits on ·`).
 const FOOTER = 4 + 2 + 20
 const KEY = 'sub-meter'
+// The hover group the meter (in SessionMode) and its card (in AbovePrompt) share; context-meter has its own.
+const SCOPE = 'sub-meter'
 const CONTEXT_KEY = 'context-meter'
 const DISPLAYS: readonly Display[] = ['rotate', 'both', 'session', 'week']
 
@@ -36,6 +42,18 @@ let rotateTimer: Timer | undefined
 let origin = 0
 let isInteractive = true
 let hintWidth = 0
+// This session's own reading: whether it had rate limits, how many main-thread responses it had,
+// and whether two came without any (an API key, say), after which no reading is drawn here or taken
+// from the store. The store is left alone: other sessions may be on a subscription.
+let isOwnSeen = false
+let isOff = false
+let responses = 0
+// Responses of the main thread without the windows after which this session is taken as off a
+// subscription. `rateLimits` is empty before the first reading too (a resumed session, say).
+const LEAST_RESPONSES = 2
+// The card's text as last drawn, so the tick writes `drawnAt` only when it changes.
+let drawnText: string | null = null
+let language: Language = 'en'
 // The settings, from the load.
 let display: Display = 'rotate'
 let seconds = 8
@@ -91,16 +109,42 @@ function roomOf (e: { surface: string; viewport?: RenderViewport }) {
 async function remember ($: EngineInterface, rateLimits: Parameters<typeof windowsOf>[0]) {
   const windows = windowsOf(rateLimits)
   if (windows.length === 0) return
+  isOwnSeen = true
+  isOff = false
   const next = { windows, at: await $.clock.now(), origin }
   await update($, reading, () => next)
   await $.store.set(STORED, next).catch(() => {})
 }
 
-/** Takes the stored reading when another session's is newer; a failed read keeps the one on screen. */
+/**
+ * This session had its responses without the windows, never having had them: no subscription here.
+ * The reading is hidden in this session only; the store keeps it for the others.
+ */
+async function forget ($: EngineInterface) {
+  isOff = true
+  if ((await read($, reading)) !== null) await update($, reading, () => null)
+}
+
+/**
+ * Takes the stored reading when another session's is newer; a failed read keeps the one on screen.
+ * A reading whose windows are all past their reset goes: nothing it says holds.
+ */
 async function syncFromStore ($: EngineInterface) {
+  const [current, now] = await Promise.all([read($, reading), $.clock.now()])
+  if (isOff) return
   const stored = readingOf(await $.store.get(STORED).catch(() => undefined))
-  const current = await read($, reading)
-  if (newer(current, stored) !== current) await update($, reading, () => stored)
+  const next = newer(current, isStale(stored, now) ? null : stored)
+  if (isStale(next, now)) await update($, reading, () => null)
+  else if (next !== current) await update($, reading, () => next)
+}
+
+/** The card's tick: the time it is drawn for is written only when its text changes (once a minute at most). */
+async function refreshCard ($: EngineInterface) {
+  const [held, now] = await Promise.all([read($, reading), $.clock.now()])
+  const text = cardText({ reading: held, now, origin }, language)
+  if (text === drawnText) return
+  drawnText = text
+  await update($, drawnAt, () => now)
 }
 
 /** Publishes which hint parts are dropped, for context-meter, when it changed (a reload may change it). */
@@ -115,6 +159,7 @@ function startTimers ($: EngineInterface) {
   syncTimer ??= $.clock.every(SYNC_MS, async () => {
     await syncFromStore($)
     await publishHides($)
+    await refreshCard($)
     if ((await read($, reading)) !== null) await update($, tick, n => n + 1)
   })
   if (display === 'rotate') {
@@ -135,15 +180,21 @@ export const register: Register = (on, options) => {
   display = DISPLAYS.find(d => d === options.display) ?? 'rotate'
   seconds = typeof options.rotateSeconds === 'number' && options.rotateSeconds >= 1 ? options.rotateSeconds : 8
   hidden = { cycle: options.hideCycleHint !== false, interrupt: options.hideInterruptHint !== false }
-  const language: Language = options.language === 'es' ? 'es' : 'en'
+  language = options.language === 'es' ? 'es' : 'en'
   const labels = LABELS[language]
 
   stopTimers()
   hintWidth = 0
+  drawnText = null
+  responses = 0
 
   on('session.start', async ($, e, next) => {
     stopTimers()
     isInteractive = e.isInteractive
+    isOwnSeen = false
+    isOff = false
+    responses = 0
+    drawnText = null
     await $.command.register({
       name: 'sub-meter',
       description: language === 'es' ? 'Muestra el uso de la suscripción' : 'Show the subscription usage',
@@ -154,6 +205,7 @@ export const register: Register = (on, options) => {
     const usage = await $.session.usage()
     origin = usage.startedAt
     await remember($, usage.rateLimits)
+    await refreshCard($)
     startTimers($)
     return next(e)
   })
@@ -167,25 +219,24 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     startTimers($)
     if (e.changed.includes('rateLimits')) await remember($, e.rateLimits)
+    // Enough main-thread responses without the windows, and none seen before: no subscription here.
+    if (!isOwnSeen && !isOff && responses >= LEAST_RESPONSES && windowsOf(e.rateLimits).length === 0) await forget($)
+    await refreshCard($)
     return next(e)
+  })
+
+  // Counts the main thread's responses; a step with an agentId is another loop's. Passed on untouched.
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    if (e.agentId === undefined && result.usage !== null) responses += 1
+    return result
   })
 
   on('command.run', { command: 'sub-meter' }, async $ => {
     await syncFromStore($)
     const [held, now] = await Promise.all([read($, reading), $.clock.now()])
-    if (held === null) {
-      return { text: language === 'es' ? 'Sin uso de suscripción en esta sesión (sin límites de uso).' : 'No subscription usage in this session (no rate limits).' }
-    }
-    const width = Math.max(...held.windows.map(w => columns(labels[w.kind])))
-    const lines = held.windows.map(w => {
-      const left = resetIn(w, now)
-      const percent = `${Math.round(percentAt(w, now))}%`.padStart(4)
-      const reset = left !== undefined
-        ? `${language === 'es' ? 'se reinicia en' : 'resets in'} ${until(left)}`
-        : w.resetsAt !== undefined ? (language === 'es' ? 'reiniciada' : 'reset') : ''
-      return `${labels[w.kind].padEnd(width)}   ${percent}   ${reset}`.trimEnd()
-    })
-    return { text: lines.join('\n') }
+    const text = cardText({ reading: held, now, origin }, language)
+    return { text: text ?? (language === 'es' ? 'Sin uso de suscripción en esta sesión (sin límites de uso).' : 'No subscription usage in this session (no rate limits).') }
   })
 
   // The hint line beside the mode label, without the parts dropped; its width says how much of the
@@ -211,7 +262,7 @@ export const register: Register = (on, options) => {
       // context-meter's fill, for the room it takes when it is drawn after this meter.
       $.state.get({ plugin: 'context-meter', key: 'fill' } as never).catch(() => undefined),
     ])
-    if (held === null) return beneath
+    if (held === null || isStale(held, now)) return beneath
 
     const { taken, rest } = takeOut(beneath, CONTEXT_KEY)
     const hasRest = e.props.modes.length > 0 || !isBlank(rest)
@@ -233,7 +284,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row">
         {taken ?? null}
         {taken !== undefined ? <Text dimColor>{SEPARATOR}</Text> : null}
-        <Box key={KEY} flexDirection="row">
+        <Box key={KEY} flexDirection="row" hover={{ scope: SCOPE }}>
           {pieces.map((p, i) => {
             const bar = split(p.at)
             return (
@@ -250,6 +301,40 @@ export const register: Register = (on, options) => {
         </Box>
         {hasRest ? <Text dimColor>{SEPARATOR}</Text> : null}
         {rest ?? null}
+      </Box>
+    )
+  })
+
+  // The hover card, in the band above the prompt, as context-meter draws its own: in the flow after
+  // what the band holds (another plugin's card too), in a holder as wide as the band that pushes it
+  // to the right end, hidden (no row) until this meter's hover group lights. A card floated out of
+  // the flow is clipped by the band on the terminal. Drawn for `drawnAt`, so it redraws only when its
+  // text changes. With nothing to show the band is left as it came.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const [held, now, beneath] = await Promise.all([read($, reading), read($, drawnAt), next(e)])
+    if (e.props.hasSurvey) return beneath
+    const card = cardOf({ reading: held, now, origin }, language, e.props.bodyColumns)
+    if (card === null) return beneath
+
+    const { Box, Text } = $.ui.resolve(e)
+    const toneProps = (tone: Tone) => (tone === 'plain' ? {} : tone === 'dim' ? { dimColor: true } : { color: tone })
+    return (
+      <Box flexDirection="column">
+        {beneath}
+        <Box
+          width={e.props.bodyColumns} justifyContent="flex-end"
+          display="none" hover={{ scope: SCOPE, display: 'flex' }}
+        >
+          <Box width={card.width} height={card.height} flexDirection="column" borderStyle="round" borderDimColor>
+            {card.rows.map(cells => (
+              <Box flexDirection="row">
+                <Text> </Text>
+                {cells.map(cell => <Text {...toneProps(cell.tone)}>{cell.text}</Text>)}
+                <Text> </Text>
+              </Box>
+            ))}
+          </Box>
+        </Box>
       </Box>
     )
   })
