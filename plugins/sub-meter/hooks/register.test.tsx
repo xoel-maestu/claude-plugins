@@ -551,3 +551,16 @@ for (const tier of ['prepend', 'append'] as const) {
     expect(await row(await footer($, 200, ['plan mode on']), ['plan mode on'])).toBe(`ctx ━━━━── 62% · 5h ${BAR(3)} 31% ↻ 2h 10m · plan mode on`)
   })
 }
+
+test('a new session draws its card afresh, even with the same text as the last one', async ($, on) => {
+  let writes = 0
+  on('state.set', ($, e, next) => {
+    if ((e as { key: string }).key === 'now') writes += 1
+    return next(e)
+  })
+  world(on, [FIVE])
+  await startSession($)
+  const before = writes
+  await startSession($)
+  expect(writes).toBe(before + 1)
+})
