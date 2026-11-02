@@ -2,7 +2,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TurnUsage } from 'claude-code'
 
-import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, cleared, markCompact, observe, observeTtl, since, statusOf, ttlInfo, ttlOf } from './cache'
+import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, cleared, markCompact, observe, observeTtl, readSubscription, seed, since, statusOf, ttlInfo, ttlOf } from './cache'
 import type { Cache } from './cache'
 
 const MIN = 60_000
@@ -108,7 +108,8 @@ test('/clear: everything starts over, with the time it happened as a marker', ()
   const lost = observe(after(100_000), usage(0, 1000), MIN, true, 'auto')
   expect(cleared(5 * MIN)).toEqual({ ...EMPTY, clearedAt: 5 * MIN })
   // A cache for another session start is a /clear at that start.
-  expect(since(lost, 9 * MIN)).toEqual({ ...EMPTY, startedAt: 9 * MIN, clearedAt: 9 * MIN })
+  // What /clear does not change (the subscription reading here) is kept.
+  expect(since(lost, 9 * MIN)).toEqual({ ...EMPTY, isSubscription: true, isSubscriptionKnown: true, startedAt: 9 * MIN, clearedAt: 9 * MIN })
   expect(since(lost, 0)).toBe(lost)
   // One that never saw its start takes it and keeps its marker.
   expect(since(cleared(5 * MIN), 6 * MIN)).toEqual({ ...EMPTY, startedAt: 6 * MIN, clearedAt: 5 * MIN })
@@ -134,13 +135,29 @@ test('TTL precedence: an explicit setting, then the observed TTL, then the infer
   expect(ttlOf({ ...EMPTY, observedTtl: '1h' }, 'auto')).toBe(HOUR)
 })
 
-test('an observed TTL is stored; a pure read (null) keeps the one before; /clear forgets it', () => {
+test('an observed TTL is stored; a pure read (null) keeps the one before; /clear keeps it', () => {
   const seen = observeTtl(EMPTY, '1h')
   expect(seen.observedTtl).toBe('1h')
   expect(observeTtl(seen, null)).toBe(seen)
   expect(observeTtl(seen, '1h')).toBe(seen)
   expect(observeTtl(seen, '5m').observedTtl).toBe('5m')
   expect(cleared(5).observedTtl).toBeUndefined()
+  expect(cleared(5, seen).observedTtl).toBe('1h')
+  expect(since({ ...seen, startedAt: 0 }, 9).observedTtl).toBe('1h')
+})
+
+test('a stored TTL is the inference until one is observed; a stored subscription stands until read', () => {
+  const stored = seed(EMPTY, { ttl: '1h', isSubscription: true })
+  expect(ttlInfo(stored, 'auto')).toEqual({ ttl: HOUR, isInferred: true })
+  expect(ttlInfo(seed(EMPTY, { ttl: '1h', isSubscription: false }), 'auto')).toEqual({ ttl: HOUR, isInferred: true })
+  expect(ttlInfo(observeTtl(stored, '5m'), 'auto')).toEqual({ ttl: FIVE_MINUTES, isInferred: false })
+  expect(stored.isSubscription).toBe(true)
+  expect(seed(EMPTY, { ttl: 'x', isSubscription: 'yes' })).toBe(EMPTY)
+  // This session's own reading replaces the stored one and a later seed leaves it.
+  const read = readSubscription(stored, false)
+  expect(read.isSubscription).toBe(false)
+  expect(seed(read, { isSubscription: true }).isSubscription).toBe(false)
+  expect(cleared(5, read)).toMatchObject({ isSubscription: false, isSubscriptionKnown: true, storedTtl: '1h' })
 })
 
 test('the observed TTL judges an idle loss: 6 minutes under an observed 1h is not expired', () => {

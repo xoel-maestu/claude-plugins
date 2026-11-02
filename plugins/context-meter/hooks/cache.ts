@@ -22,12 +22,14 @@ const msOf = (ttl: Ttl) => (ttl === '1h' ? HOUR : FIVE_MINUTES)
 
 /**
  * The TTL in force and whether it is inferred: the setting when explicit; else the TTL the
- * transcript showed the last cache write used; else inferred (1h on a subscription or once a hit
+ * transcript showed the last cache write used; else inferred: the TTL an earlier session last
+ * observed (from `$.store`), else (1h on a subscription or once a hit
  * past a 5 minute pause showed it, 5m otherwise).
  */
 export function ttlInfo (cache: Cache, setting: TtlSetting): { ttl: number; isInferred: boolean } {
   if (setting !== 'auto') return { ttl: msOf(setting), isInferred: false }
   if (cache.observedTtl !== undefined) return { ttl: msOf(cache.observedTtl), isInferred: false }
+  if (cache.storedTtl !== undefined) return { ttl: msOf(cache.storedTtl), isInferred: true }
   return { ttl: cache.isSubscription || cache.isLongSeen ? HOUR : FIVE_MINUTES, isInferred: true }
 }
 
@@ -44,7 +46,7 @@ export const observeTtl = (cache: Cache, ttl: Ttl | null): Cache =>
  * pause past the TTL, else invalidated). `isSubscription` says the session has rate limits.
  */
 export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscription: boolean, setting: TtlSetting): Cache {
-  const base = { ...cache, isSubscription: cache.isSubscription || isSubscription }
+  const base = isSubscription ? { ...cache, isSubscription: true, isSubscriptionKnown: true } : cache
   const read = usage.cache_read_input_tokens
   const next: Cache = {
     ...base,
@@ -70,8 +72,42 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
 /** A main-thread compaction: the next request's loss, if any, is its. */
 export const markCompact = (cache: Cache): Cache => ({ ...cache, isCompactPending: true })
 
-/** /clear at `at`: everything starts over, the time kept as a marker. */
-export const cleared = (at: number): Cache => ({ ...EMPTY, clearedAt: at })
+/**
+ * This session's own reading of whether it is a subscription: it replaces the stored one. Only
+ * rate limits seen say true; their absence after a response or more says false.
+ */
+export const readSubscription = (cache: Cache, isSubscription: boolean): Cache =>
+  cache.isSubscriptionKnown === true && cache.isSubscription === isSubscription
+    ? cache
+    : { ...cache, isSubscription, isSubscriptionKnown: true }
+
+/**
+ * What `$.store` kept from earlier sessions: the TTL last observed (inferred until this session's
+ * transcript confirms one) and whether the session was a subscription (used until this session's
+ * own reading arrives). Values of the wrong type are ignored.
+ */
+export function seed (cache: Cache, stored: { ttl?: unknown; isSubscription?: unknown }): Cache {
+  let next = cache
+  if ((stored.ttl === '5m' || stored.ttl === '1h') && cache.storedTtl !== stored.ttl) next = { ...next, storedTtl: stored.ttl }
+  if (typeof stored.isSubscription === 'boolean' && cache.isSubscriptionKnown !== true && cache.isSubscription !== stored.isSubscription) {
+    next = { ...next, isSubscription: stored.isSubscription }
+  }
+  return next
+}
+
+/**
+ * /clear at `at`: the requests, losses and pause evidence start over, the time kept as a marker.
+ * What /clear does not change is kept from `before`: the TTL setting's observed (and stored) TTL and
+ * whether the session is a subscription.
+ */
+export const cleared = (at: number, before?: Cache): Cache => ({
+  ...EMPTY,
+  ...(before?.observedTtl !== undefined ? { observedTtl: before.observedTtl } : {}),
+  ...(before?.storedTtl !== undefined ? { storedTtl: before.storedTtl } : {}),
+  ...(before?.isSubscriptionKnown !== undefined ? { isSubscriptionKnown: before.isSubscriptionKnown } : {}),
+  isSubscription: before?.isSubscription ?? false,
+  clearedAt: at,
+})
 
 /**
  * The cache for the session that began at `startedAt`: this one if it is that session's; one that
@@ -80,7 +116,7 @@ export const cleared = (at: number): Cache => ({ ...EMPTY, clearedAt: at })
 export function since (cache: Cache, startedAt: number): Cache {
   if (cache.startedAt === startedAt) return cache
   if (cache.startedAt === undefined) return { ...cache, startedAt }
-  return { ...cleared(startedAt), startedAt }
+  return { ...cleared(startedAt, cache), startedAt }
 }
 
 export type Status = { kind: 'none' } | { kind: 'active'; left: number } | { kind: 'expired'; ago: number }

@@ -49,7 +49,7 @@ export type ContextMeterTtl = '5m' | '1h'
  * plus cache write), model and time; whether a main-thread compaction came since; whether the
  * session has rate limits (a subscription) and whether a hit past a 5 minute pause showed a 1h TTL;
  * the TTL the last main-thread cache write used, as the session transcript records it
- * (`observedTtl`, absent until one is read); the 10 newest losses, newest first; when /clear
+ * (`observedTtl`, absent until one is read; kept across /clear); the 10 newest losses, newest first; when /clear
  * started it over. `startedAt` as in the ledger.
  */
 export type ContextMeterCache = {
@@ -59,6 +59,10 @@ export type ContextMeterCache = {
   isSubscription: boolean
   isLongSeen: boolean
   observedTtl?: ContextMeterTtl
+  /** The TTL an earlier session last observed, from `$.store`: an inference until this session observes one. */
+  storedTtl?: ContextMeterTtl
+  /** Whether `isSubscription` is this session's own reading rather than the stored one. */
+  isSubscriptionKnown?: boolean
   losses: ContextMeterLoss[]
   clearedAt?: number
 }
