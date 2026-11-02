@@ -17,7 +17,7 @@ Hover the meter to open a card with the detail; `/context-meter` prints the same
 │ Last request   51.5k    50.2k        1.3k          4          776    │
 │ Session        200.5k   165.9k       34.6k         10         1.2k   │
 │ Cache hit      83% of input read from cache                          │
-│ Cost           $4.12 (session, all agents)                           │
+│ Cost           ≈ $4.12 at list prices (session, all agents)          │
 │ Cache          active until 04:12 (in 41m, TTL 1h)                   │
 │ Cache losses   02:14  −112k  idle 1h07m > TTL                        │
 │                01:02  −98k   /compact                                │
@@ -49,7 +49,7 @@ The headers always show. On a band too narrow for even Input, Cache read and Out
 - The autocompact point comes from the same breakdown, read again with every estimate, when the window changes, and after a start, `/clear`, a compaction or an autocompact switch in `/config`; when auto-compaction is off or unknown its row is left out and the card is a row shorter.
 - The figure is read again every 2 s (a free call), to catch resumes and rewinds.
 - Colors: dim below `warnAt`, theme `warning` from `warnAt`, theme `error` from `dangerAt` (given the wrong way round, the two are swapped).
-- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them. **Input** is all the input: **Cache read** (served by the prompt cache), **Cache write** (written to it) and **Uncached** (the API's `input_tokens`). **Output** is the response. **Cost** is on its own row, labelled as the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is left out when the host reports no cost or a cost of 0 (as on a subscription); a cost under a cent reads `<$0.01`. **Cache hit** is cache read over Input for the session. Before the first response these rows are left out, never shown as zeros.
+- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them. **Input** is all the input: **Cache read** (served by the prompt cache), **Cache write** (written to it) and **Uncached** (the API's `input_tokens`). **Output** is the response. **Cost** is on its own row: the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is a client-side estimate at API list prices, not a bill ([Claude Code costs](https://code.claude.com/docs/en/costs.md)): on a subscription (rate limits seen) it reads `≈ $0.004 at API list prices (not billed on your plan)`, since it is not what the plan charges; otherwise `≈ $4.12 at list prices (session, all agents)`. Two decimals from a cent; under a cent from the first significant digit (`$0.004`, `$0.0004`). Where the band is narrow the tail shortens to `(not billed)` or `(estimate)`, and where even that does not fit only the amount stays; a word is never cut. The row is left out when the host reports no cost or a cost of 0. **Cache hit** is cache read over Input for the session. Before the first response these rows are left out, never shown as zeros.
 - **Cache** and **Cache losses**: see below.
 - The counts live in `$.state` (`ledger`), so a reload of the plugin keeps them. They count from the session's start (`$.session.usage().startedAt`): `/clear` empties them, and a ledger written for another start is dropped.
 - Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most.
@@ -61,7 +61,7 @@ The headers always show. On a band too narrow for even Input, Cache read and Out
 | `warnAt` | 50 | percentage for the warning color |
 | `dangerAt` | 75 | percentage for the error color |
 | `language` | `en` | `en` or `es`, for the card and `/context-meter` |
-| `cacheTtl` | `auto` | `auto`, `5m` or `1h`: the prompt cache lifetime the countdown and the idle cause use |
+| `cacheTtl` | `auto` | `auto`, `5m` or `1h`: the prompt cache lifetime the countdown and the idle cause use; `auto` reads it from the session transcript |
 
 ## Cache losses and TTL
 
@@ -76,7 +76,15 @@ Where the band is too narrow for a cause, its short form is used (`/compact`, `m
 
 The history keeps the 10 newest losses, newest first; the card shows the 5 newest and `/context-meter` all 10. `/clear` starts the cache over and its time shows as the first history line (`Cleared at 14:05`); it is not a loss.
 
-The TTL: `5m` or `1h` as set; under `auto`, 1h when the session has rate limits (a subscription: seen on any usage read, the 2 s resync included, so a first request made before the host reports them turns 1h too), 5m otherwise, and 1h for the rest of the session once a request reads the cache back (`cache read ≥ P / 2`) after a pause of more than 5 minutes. The cache expires at the last main-thread request's time plus the TTL: `active until 04:12 (in 41m, TTL 1h)` (the expiry as a local time, then whole minutes left, `in <1m` in the last minute), `expired 3m ago` (`<1m`, then minutes, `1h07m` from an hour), or `no cache yet`. Where the band is narrow the active line reads `until 04:12 (TTL 1h)`.
+The TTL, first that holds:
+
+1. `cacheTtl` set to `5m` or `1h`.
+2. Observed: the TTL the last main-thread cache write used, as the session transcript records it. Claude Code asks for the 1h TTL only on a Claude subscription within the plan's included usage and only for the main conversation (subagents and compaction get 5m); an API key, usage credits and cloud providers get 5m; environment variables and settings (`FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, `promptCacheTtl`, `ENABLE_PROMPT_CACHING_1H`) override it ([prompt caching](https://code.claude.com/docs/en/prompt-caching.md)). So no setting the plugin can see tells it for sure; the response's usage does. Each main-thread assistant entry of the transcript (JSONL) has `message.usage.cache_creation` with `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`: 1h tokens written mean 1h, 5m tokens mean 5m, none (a pure read) keeps the TTL observed before. Entries with `isSidechain` (a subagent's) or an `agentId`, other entry types and malformed lines are skipped.
+3. Inferred, shown with `?` (`TTL 1h?`): 1h when the session has rate limits (a subscription: seen on any usage read, the 2 s resync included, so a first request made before the host reports them turns 1h too), 5m otherwise, and 1h for the rest of the session once a request reads the cache back (`cache read ≥ P / 2`) after a pause of more than 5 minutes.
+
+The transcript's path comes from the classic hook events' `transcript_path` (`classic.SessionStart`, a `/clear`'s new file included, `classic.UserPromptSubmit` and `classic.Stop`, the main thread's only: an event with `agent_id` is a subagent's). `$.fs` reads only whole files, up to 4 MiB, and has no ranged read: the file is `$.fs.stat`ed and read only when its size changed, after each main-thread request is recorded and again at the end of each main-thread turn (`classic.Stop`, by when the turn's last response is written); it is scanned from its end for the last main-thread entry. A transcript over 4 MiB is not read: the TTL last observed stands, and in a session that was already over 4 MiB when the plugin loaded it stays inferred (`?`). The observed TTL lives in the cache's `$.state` (`observedTtl`); `/clear` starts it over.
+
+The cache expires at the last main-thread request's time plus the TTL: `active until 04:12 (in 41m, TTL 1h)` (the expiry as a local time, then whole minutes left, `in <1m` in the last minute), `expired 3m ago` (`<1m`, then minutes, `1h07m` from an hour), or `no cache yet`. Where the band is narrow the active line reads `until 04:12 (TTL 1h)`.
 
 The cache is fed from the same queued recording as the token counts, after `turn.step` returns, and compactions and `/clear` go in the same queue, so each lands between the right requests. It lives in `$.state` (`cache`), so a reload keeps the losses and the TTL.
 
