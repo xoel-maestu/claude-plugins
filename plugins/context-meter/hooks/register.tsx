@@ -131,6 +131,9 @@ async function keepSession ($: EngineInterface, startedAt: number) {
   if (since(kept, startedAt) !== kept) await update($, ledger, () => ({ ...EMPTY, startedAt }))
 }
 
+/** The recordings of main-thread responses, one after another. */
+let recording: Promise<void> = Promise.resolve()
+
 /** A main-thread response: its counts become the last request and add to the session. */
 async function record ($: EngineInterface, usage: TurnUsage) {
   const [{ startedAt, cost: spent }, now] = await Promise.all([$.session.usage(), $.clock.now()])
@@ -164,6 +167,7 @@ export const register: Register = (on, options) => {
 
   timer?.cancel()
   timer = undefined
+  recording = Promise.resolve()
   isCounting = false
   countedWindow = 0
   isCompactAtStale = true
@@ -211,9 +215,13 @@ export const register: Register = (on, options) => {
   // Each response of the main thread feeds the ledger. A step with an agentId is another loop's
   // (a subagent, a teammate, a workflow agent, or the engine's own forks: compaction, memory) and
   // counts nothing. The stream is passed on untouched; the counts are read from its result.
+  // The result goes back at once: the recording runs after it, chained so steps add in order.
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
-    if (e.agentId === undefined && result.usage !== null) await record($, result.usage)
+    const usage = result.usage
+    if (e.agentId === undefined && usage !== null) {
+      recording = recording.then(() => record($, usage)).catch(() => {})
+    }
     return result
   })
 
@@ -235,6 +243,8 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'context-meter' }, async $ => {
+    // The responses already in are counted before the card is printed.
+    await recording
     const usage = await $.session.usage()
     await keepSession($, usage.startedAt)
     await showCost($, usage.cost)

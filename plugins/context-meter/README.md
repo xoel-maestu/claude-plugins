@@ -72,7 +72,7 @@ The band's body ends five columns before the terminal's edge (the engine keeps t
 
 ## Which requests count
 
-`turn.step` fires for every model request of a turn, the main thread's and every other loop's. Its input carries `agentId`, the loop the request is made in: absent on the main thread, set for a subagent, a teammate, a workflow agent and the engine's own forks (compaction, memory), which carry ids `$.agent.list()` does not name (`TurnStepInput.agentId` and `AgentLoop.agentId` in the API types). The hook is a streaming one: it passes the stream on untouched (`yield* next(e)`), and from the result it adds `usage` to the ledger only when `e.agentId` is undefined and `usage` is not null (a request that got no response). The cost line is the session's whole cost as `/cost` gives it, subagents included.
+`turn.step` fires for every model request of a turn, the main thread's and every other loop's. Its input carries `agentId`, the loop the request is made in: absent on the main thread, set for a subagent, a teammate, a workflow agent and the engine's own forks (compaction, memory), which carry ids `$.agent.list()` does not name (`TurnStepInput.agentId` and `AgentLoop.agentId` in the API types). The hook is a streaming one: it passes the stream on untouched (`yield* next(e)`) and returns the result at once; the recording of `usage` into the ledger runs after it, chained so quick steps add in order, and `/context-meter` waits for it. It records only when `e.agentId` is undefined and `usage` is not null (a request that got no response). The cost line is the session's whole cost as `/cost` gives it, subagents included.
 
 ## Development
 
