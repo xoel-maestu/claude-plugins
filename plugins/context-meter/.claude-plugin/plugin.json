@@ -9,7 +9,7 @@
   "homepage": "https://github.com/xoel-maestu/claude-plugins",
   "repository": "https://github.com/xoel-maestu/claude-plugins",
   "license": "MIT",
-  "keywords": ["context", "tokens", "compact", "status", "mod"],
+  "keywords": ["context", "tokens", "cache", "compact", "status", "mod"],
   "types": "./types/index.d.ts",
   "userConfig": {
     "warnAt": {

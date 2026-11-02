@@ -36,7 +36,7 @@ test('the card: figures, a bar as wide as the content and the autocompact point,
 test('the figures take the meter tone, the label plain, the empty bar and the autocompact row dim', () => {
   const [figures, bar, compact] = cardOf({ fill: FILL, compactAt: 167_000 }, 'en')!.rows
   expect(figures!.map(cell => cell.tone)).toEqual(['plain', 'meter', 'meter', 'plain'])
-  expect(bar!.map(cell => cell.tone)).toEqual(['meter', 'dim'])
+  expect(bar!.map(cell => cell.tone)).toEqual(['bar', 'dim'])
   expect(compact![0]!.tone).toBe('dim')
 })
 

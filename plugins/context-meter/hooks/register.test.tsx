@@ -1,7 +1,7 @@
 // Mod tests, run against the engine itself: `claude plugin test .`. Every figure is synthetic.
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, SessionContextUsage, SessionMessage, TurnUsage } from 'claude-code'
+import type { On, Register, SessionContextUsage, SessionMessage, TurnUsage } from 'claude-code'
 
 import { clockTime } from './card'
 
@@ -100,12 +100,16 @@ function onRow (node: Drawn): string[] {
 }
 const row = async (ui: { drawn: () => Promise<unknown> }) => onRow((await ui.drawn()) as Drawn)
 
-test('shows the fill as a bar, dim below warnAt', async ($, on) => {
+test('shows the fill as a bar, the bar in the theme claude color below warnAt, the figure plain', async ($, on) => {
   world(on, fill(30))
   await startSession($)
   const ui = await footer($)
   expect(await row(ui)).toEqual(['ctx ', '━━', '──── ', '30%'])
-  expect(await ui.find({ type: 'Text', text: '30%' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: '━━' })).toMatchObject({ props: { color: 'claude' } })
+  const figure = (await ui.find({ type: 'Text', text: '30%' })) as { props?: Record<string, unknown> }
+  expect(figure.props?.color).toBeUndefined()
+  expect(figure.props?.dimColor).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'ctx ' })).toMatchObject({ props: { dimColor: true } })
   expect(await ui.find({ key: 'context-meter' })).toBeDefined()
 })
 
@@ -1032,4 +1036,111 @@ test('the transcript written after Stop is read on the next resync: the band car
   file.lines.push(JSON.stringify({ type: 'system', isSidechain: false }))
   await w.clock.advance(10_000)
   expect(file.tails).toBe(tails)
+})
+
+// The shared row with sub-meter. The test kit loads no module from outside this folder, so sub-meter
+// is simulated: its footer drawing exactly as its register.tsx draws it (context-meter's Box taken
+// out and put first with its separator, its own keyed Box, then what is beneath), its reading and
+// the hint parts it drops in `$.state`, and the hint line rewritten. Its text at each width is the
+// one its own tests assert beside context-meter. Loaded outside this plugin (prepend) or inside it
+// (append), the row is the same. Footer 26 + hint 16 ('? for shortcuts' once the cycle hint drops).
+const SHARED: [number, string][] = [
+  [200, 'ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m'],
+  [120, 'ctx ━━━━── 62% · 5h ━━━─────── 31% ↻ 2h 10m'],
+  [80, 'ctx ━━━━── 62% · 5h 31% ↻ 2h 10m'],
+  [70, 'ctx ━━━━── 62% · 5h 31%'],
+  [66, 'ctx 62% · 5h 31%'],
+  [57, 'ctx 62%'],
+  [48, '62%'],
+  [44, ''],
+]
+
+const subMeter: Register = on => {
+  // An inline plugin runs in an environment of its own: what it uses is written inside it.
+  const BAR = '━━━───────'
+  const TEXTS: Record<number, string> = { 200: `5h ${BAR} 31% ↻ 2h 10m`, 120: `5h ${BAR} 31% ↻ 2h 10m`, 80: '5h 31% ↻ 2h 10m', 70: '5h 31%', 66: '5h 31%' }
+  const SEP = ' · '
+  on('session.start', async ($, e, next) => {
+    await $.state.set({ plugin: 'sub-meter', key: 'reading' } as never, { windows: [{ kind: 'five_hour', percentUsed: 31 }], at: 0, origin: 0 } as never)
+    await $.state.set({ plugin: 'sub-meter', key: 'hides' } as never, { cycle: true, interrupt: true } as never)
+    return next(e)
+  })
+  on('ui.render', { component: 'PromptHint' }, ($, e, next) =>
+    next({ ...e, props: { ...e.props, hint: e.props.hint.replace('(shift+tab to cycle) · ', '') } }))
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const beneath = await next(e)
+    const text = TEXTS[e.viewport?.columns ?? 200]
+    if (text === undefined) return beneath
+    const { Box, Text } = $.ui.resolve(e)
+    type Kid = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+    const kids = (typeof beneath === 'object' && beneath !== null && beneath.type === 'Box' ? beneath.children ?? [] : []) as Kid[]
+    const hasContext = kids[0]?.props?.key === 'context-meter'
+    const isSep = (k: Kid) => k?.type === 'Text' && (k.children ?? []).join('') === SEP
+    const rest = hasContext ? kids.slice(1).filter(k => !isSep(k)) : [beneath]
+    return (
+      <Box flexDirection="row">
+        {hasContext ? (kids[0] as never) : null}
+        {hasContext ? <Text dimColor>{SEP}</Text> : null}
+        <Box key="sub-meter" flexDirection="row"><Text>{text}</Text></Box>
+        {e.props.modes.length > 0 ? <Text dimColor>{SEP}</Text> : null}
+        {rest as never}
+      </Box>
+    )
+  })
+}
+
+for (const tier of ['prepend', 'append'] as const) {
+  test(`beside sub-meter (${tier === 'prepend' ? 'outside' : 'inside'} it): ctx first, the same row at every width`, { plugins: [{ name: 'sub-meter', tier, register: subMeter }] }, async ($, on) => {
+    world(on, fill(62))
+    await startSession($)
+    await measure($, 62)
+    await hint($, '(shift+tab to cycle) · ? for shortcuts')
+    for (const [columns, expected] of SHARED) {
+      expect(`${columns}: ${(await row(await footer($, columns))).join('')}`).toBe(`${columns}: ${expected}`)
+    }
+  })
+}
+
+test('alone, with the cycle hint it measures the hint as it came', async ($, on) => {
+  world(on, fill(62))
+  await startSession($)
+  await hint($, '(shift+tab to cycle) · ? for shortcuts') // 38 columns: 80 - 26 - 39 = 15 left
+  expect((await row(await footer($, 80))).join('')).toBe('ctx ━━━━── 62%')
+  await hint($, '(shift+tab to cycle) · ? for shortcuts!') // 14 left
+  expect((await row(await footer($, 80))).join('')).toBe('ctx ━━━━── 62%')
+  await hint($, '(shift+tab to cycle) · ? for shortcuts!!') // 13 left
+  expect((await row(await footer($, 80))).join('')).toBe('ctx 62%')
+})
+
+test("the card's bar is in the theme claude color below warnAt, its figures plain", async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 30)
+  const ui = await band($)
+  const bar = (await ui.find({ type: 'Text', text: '━'.repeat(11) })) as { props?: Record<string, unknown> }
+  expect(bar.props?.color).toBe('claude')
+  const figure = (await ui.find({ type: 'Text', text: '   30%' })) as { props?: Record<string, unknown> } | undefined
+  expect(figure).toBeDefined()
+  expect(figure?.props?.color).toBeUndefined()
+  expect(figure?.props?.dimColor).toBeUndefined()
+})
+
+test('counts what is beneath, without what is hidden or out of the flow', async ($, on) => {
+  // Another plugin's drawing beneath: a label on the row, a hidden card and a placed one.
+  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="row">
+        <Text>⏵ other</Text>
+        <Box display="none"><Text>{'x'.repeat(60)}</Text></Box>
+        <Box position="absolute"><Text>{'y'.repeat(60)}</Text></Box>
+      </Box>
+    )
+  })
+  world(on, fill(62))
+  await startSession($)
+  await hint($, '? for shortcuts')
+  // 66 - 42 - 7 - 3 = 14 left: the bar fits; one column less, it does not.
+  expect((await row(await footer($, 66))).slice(0, 6)).toEqual(['ctx ', '━━━━', '── ', '62%', ' · ', '⏵ other'])
+  expect((await row(await footer($, 65))).slice(0, 4)).toEqual(['ctx ', '62%', ' · ', '⏵ other'])
 })

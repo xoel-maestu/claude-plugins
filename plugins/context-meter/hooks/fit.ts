@@ -20,9 +20,33 @@ export function widthOf (form: Form, text: string): number {
   return text.length
 }
 
-/** The widest form that fits in `room` columns; null when not even the label fits. */
-export const fit = (room: number, text: string): Form | null =>
-  FORMS.find(form => widthOf(form, text) <= room) ?? null
+/** sub-meter's least form (`5h 31%`), counted as 8 columns: beside it the bar needs room for it too. */
+export const SUB_LEAST = 8
+
+/**
+ * The widest form that fits in `room` columns; null when not even the label fits. `reserve` columns
+ * more are needed for the bar (a separator and sub-meter's least form, when it draws beside it).
+ */
+export const fit = (room: number, text: string, reserve = 0): Form | null =>
+  FORMS.find(form => widthOf(form, text) + (form === 'bar' ? reserve : 0) <= room) ?? null
+
+/** Which parts of the hint line sub-meter drops. */
+export type Hides = { cycle: boolean; interrupt: boolean }
+
+const CYCLE = /\([^()]* to cycle\)/g
+const INTERRUPT = /esc to interrupt/g
+
+/**
+ * The hint line as sub-meter draws it (the same rule as its `tidy`): without the parts dropped and
+ * the empty parts and separators they leave. Dropping again changes nothing.
+ */
+export function tidy (hint: string, hides: Hides): string {
+  let line = hint
+  if (hides.cycle) line = line.replace(CYCLE, ' · ')
+  if (hides.interrupt) line = line.replace(INTERRUPT, ' · ')
+  if (line === hint) return hint
+  return line.split('·').map(part => part.trim()).filter(Boolean).join(' · ')
+}
 
 /** How many of the bar's cells are filled for `percent`, and how many are left. */
 export function barOf (percent: number, text: string): { filled: number; empty: number } {
