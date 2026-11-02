@@ -437,8 +437,9 @@ test('each main-thread response is the last request and adds to the session', as
   expect(result).toMatchObject({ stopReason: 'end_turn', usage: { input_tokens: 200 } })
   expect(await tokenLines($)).toEqual([
     'Last request   in 200    cache read 104k   cache write 1k   out 500',
-    'Session        in 1.2k   cache read 204k   cache write 5k   out 2.5k   $0.80',
+    'Session        in 1.2k   cache read 204k   cache write 5k   out 2.5k',
     'Cache hit      97%',
+    'Cost           $0.80 (session, all agents)',
   ])
 })
 
@@ -508,13 +509,14 @@ const withRequests = async ($: Engine, on: On) => {
 test('the band card at 120 columns: the token rows in full, the card as wide as they need', async ($, on) => {
   await withRequests($, on)
   const { box, rows } = await cardIn(await band($, 115))
-  expect(box?.props).toMatchObject({ width: 86, height: 7 })
+  expect(box?.props).toMatchObject({ width: 78, height: 8 })
   expect(rows.map(row => row.trimEnd())).toEqual([
     ' Context   124k / 200k   62%',
-    ' ' + '━'.repeat(51) + '─'.repeat(31),
+    ' ' + '━'.repeat(46) + '─'.repeat(28),
     ' Last request   in 29.8k   cache read 2M     cache write 154.9k   out 85.6k',
-    ' Session        in 31k     cache read 2.1M   cache write 160k     out 88k     $4.12',
+    ' Session        in 31k     cache read 2.1M   cache write 160k     out 88k',
     ' Cache hit      92%',
+    ' Cost           $4.12 (session, all agents)',
   ])
 })
 
@@ -527,9 +529,10 @@ test('the band card at 60 columns: each token row in two lines, none wrapping', 
   expect(rows.slice(2).map(row => row.trimEnd())).toEqual([
     ' Last request   in 29.8k   out 85.6k',
     '                cache read 2M     cache write 154.9k',
-    ' Session        in 31k     out 88k     $4.12',
+    ' Session        in 31k     out 88k',
     '                cache read 2.1M   cache write 160k',
     ' Cache hit      92%',
+    ' Cost           $4.12 (session, all agents)',
   ])
 })
 
@@ -538,7 +541,8 @@ test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on)
   const { rows } = await cardIn(await band($, 115))
   expect(rows.slice(2).map(row => row.trim())).toEqual([
     'Última petición    entrada 29.8k   caché leída 2M     caché escrita 154.9k   salida 85.6k',
-    'Sesión             entrada 31k     caché leída 2.1M   caché escrita 160k     salida 88k     $4.12',
+    'Sesión             entrada 31k     caché leída 2.1M   caché escrita 160k     salida 88k',
     'Acierto de caché   92%',
+    'Coste              $4.12 (sesión, todos los agentes)',
   ])
 })
