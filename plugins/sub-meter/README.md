@@ -47,6 +47,12 @@ This plugin replaces the sub-meter of [midudev/better-claude](https://github.com
 
 The hover card needs a terminal with mouse reporting. `/sub-meter` works in any terminal.
 
+## Uninstall
+
+```
+/plugin uninstall sub-meter@xoel-plugins
+```
+
 ## Options
 
 Set them in `/config`.

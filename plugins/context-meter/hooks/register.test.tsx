@@ -901,7 +901,7 @@ test('the transcript is read once per turn, at its end, and again only when its 
   expect(file.tails).toBe(1)
   expect(file.reads).toBe(0)
   // The path is one argv element, no shell.
-  expect(file.argv).toEqual(['tail', '-c', String(256 * 1024), TRANSCRIPT])
+  expect(file.argv).toEqual(['tail', '-c', String(256 * 1024), '--', TRANSCRIPT])
 })
 
 test('past 4 MiB the tail still reads the TTL, its first cut line dropped', async ($, on) => {

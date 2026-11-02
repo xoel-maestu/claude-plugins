@@ -48,6 +48,12 @@ When the footer is short the meter drops its bar (`ctx 5%`), then the `ctx` pref
 
 The hover card needs a terminal with mouse reporting. `/context-meter` works in any terminal.
 
+## Uninstall
+
+```
+/plugin uninstall context-meter@xoel-plugins
+```
+
 ## Options
 
 Set them in `/config`.
