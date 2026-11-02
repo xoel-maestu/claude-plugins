@@ -257,7 +257,7 @@ function cacheRows (cache: Cache, ttl: number, now: number, words: Words, langua
 function costRow (usd: number, words: Words, scope: string, labelWidth: number): Row {
   return [
     { text: words.cost.padEnd(labelWidth), tone: 'plain' },
-    { text: `$${usd.toFixed(2)} `, tone: 'plain' },
+    { text: `${usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`} `, tone: 'plain' },
     { text: scope, tone: 'dim' },
   ]
 }
