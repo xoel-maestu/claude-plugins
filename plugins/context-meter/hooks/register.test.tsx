@@ -100,12 +100,16 @@ function onRow (node: Drawn): string[] {
 }
 const row = async (ui: { drawn: () => Promise<unknown> }) => onRow((await ui.drawn()) as Drawn)
 
-test('shows the fill as a bar, dim below warnAt', async ($, on) => {
+test('shows the fill as a bar, the bar in the theme claude color below warnAt, the figure plain', async ($, on) => {
   world(on, fill(30))
   await startSession($)
   const ui = await footer($)
   expect(await row(ui)).toEqual(['ctx ', '━━', '──── ', '30%'])
-  expect(await ui.find({ type: 'Text', text: '30%' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: '━━' })).toMatchObject({ props: { color: 'claude' } })
+  const figure = (await ui.find({ type: 'Text', text: '30%' })) as { props?: Record<string, unknown> }
+  expect(figure.props?.color).toBeUndefined()
+  expect(figure.props?.dimColor).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'ctx ' })).toMatchObject({ props: { dimColor: true } })
   expect(await ui.find({ key: 'context-meter' })).toBeDefined()
 })
 
@@ -1032,4 +1036,17 @@ test('the transcript written after Stop is read on the next resync: the band car
   file.lines.push(JSON.stringify({ type: 'system', isSidechain: false }))
   await w.clock.advance(10_000)
   expect(file.tails).toBe(tails)
+})
+
+test("the card's bar is in the theme claude color below warnAt, its figures plain", async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 30)
+  const ui = await band($)
+  const bar = (await ui.find({ type: 'Text', text: '━'.repeat(11) })) as { props?: Record<string, unknown> }
+  expect(bar.props?.color).toBe('claude')
+  const figure = (await ui.find({ type: 'Text', text: '   30%' })) as { props?: Record<string, unknown> } | undefined
+  expect(figure).toBeDefined()
+  expect(figure?.props?.color).toBeUndefined()
+  expect(figure?.props?.dimColor).toBeUndefined()
 })

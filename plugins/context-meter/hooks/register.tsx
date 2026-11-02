@@ -453,16 +453,15 @@ export const register: Register = (on, options) => {
 
     const { Box, Text } = $.ui.resolve(e)
     const color = colorFor(shown.percent)
-    const isDim = color === undefined
     const bar = barOf(shown.percent, text)
 
     return (
       <Box flexDirection="row">
         <Box key="context-meter" flexDirection="row" hover={{ scope: SCOPE }}>
           {form !== 'bare' ? <Text dimColor>ctx </Text> : null}
-          {form === 'bar' ? <Text color={color} dimColor={isDim}>{'━'.repeat(bar.filled)}</Text> : null}
+          {form === 'bar' ? <Text color={color ?? 'claude'}>{'━'.repeat(bar.filled)}</Text> : null}
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
-          <Text color={color} dimColor={isDim}>{text}</Text>
+          <Text color={color}>{text}</Text>
         </Box>
         {hasBeneath ? <Text dimColor>{SEPARATOR}</Text> : null}
         {beneath}
@@ -483,9 +482,8 @@ export const register: Register = (on, options) => {
 
     const { Box, Text } = $.ui.resolve(e)
     const color = colorFor(shown.percent)
-    const isDim = color === undefined
     const toneProps = (tone: Tone) =>
-      tone === 'meter' ? { color, dimColor: isDim } : tone === 'dim' ? { dimColor: true } : {}
+      tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? 'claude' } : tone === 'dim' ? { dimColor: true } : {}
 
     // The card sits in the flow, after what the band holds, in a holder as wide as the band that
     // pushes it to the right end. The holder is hidden (no row) until the hover group lights: a
