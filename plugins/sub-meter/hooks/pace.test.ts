@@ -40,3 +40,8 @@ test('the weekly window lasts 7 days', () => {
   expect(paceOf(week, 3 * DAY)).toEqual({ isReaching: true, at: 5 * DAY })
   expect(paceOf({ ...week, percentUsed: 30 }, 3 * DAY)).toEqual({ isReaching: false })
 })
+
+test('at 100% or more the window is already full, not reaching it now', () => {
+  expect(paceOf(five(100), 2 * HOUR)).toEqual({ isFull: true })
+  expect(paceOf(five(104), 2 * HOUR)).toEqual({ isFull: true })
+})

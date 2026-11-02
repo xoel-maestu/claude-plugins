@@ -101,3 +101,9 @@ test('how long ago, in whole minutes', () => {
   expect(ago(59 * MINUTE + 59_000)).toBe('59m')
   expect(ago(67 * MINUTE)).toBe('1h07m')
 })
+
+test('a window at 100% says it is already there', () => {
+  const lines = (language: 'en' | 'es') => (cardText({ reading: reading([100, 12]), now: NOW, origin: 0 }, language) ?? '').split('\n')
+  expect(lines('en')).toContain('Pace    5h is already at 100%')
+  expect(lines('es')).toContain('Ritmo   5h ya está al 100%')
+})
