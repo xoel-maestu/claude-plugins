@@ -167,27 +167,72 @@ test('a stored reading past its reset is not taken by a new session', async ($, 
   expect(await row(await footer($, 200))).toBe('')
 })
 
-test('a response without rate limits, none seen before: the stored reading goes, nothing is drawn', async ($, on) => {
-  const store: Record<string, unknown> = { reading: { windows: [{ ...WEEK, percentUsed: 20 }], at: 5, origin: 99 } }
+/** One main-thread response (or, with `agentId`, another loop's): a model request's stream read to the end. */
+async function respond ($: Engine, agentId?: string) {
+  const stream = $.turn.step({ turnId: 'turn-1', index: 0, model: 'model-a', messageCount: 2, ...(agentId === undefined ? {} : { agentId }) })
+  let step = await stream.next()
+  while (step.done !== true) step = await stream.next()
+}
+const FILL = { window: 200_000, tokens: 2000, percent: 1 }
+/** The world with a store that can delete, and a model that answers with token counts. */
+function deletingWorld (on: On, store: Record<string, unknown>) {
   on('store.delete', ($, e) => {
     delete store[(e as { key: string }).key]
     return { value: undefined } as never
   })
-  const w = world(on, [], store)
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 10, output_tokens: 5, model: 'model-a' } as never }
+  })
+  return world(on, [], store)
+}
+
+test('a resumed session with a fill and no rate limits before any response keeps the reading and the store', async ($, on) => {
+  const stored = { windows: [{ ...WEEK, percentUsed: 20 }], at: 5, origin: 99 }
+  const store: Record<string, unknown> = { reading: stored }
+  deletingWorld(on, store)
   await startSession($)
   const ui = await footer($, 200)
+  // The fill restored from the transcript, no response yet; split measures too.
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['context'] })
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['rateLimits'] })
   expect(await row(ui)).toMatch(/^week /)
-  // A measure without a fill (no response yet) changes nothing.
-  await measure($, [])
+  expect(store.reading).toEqual(stored)
+})
+
+test('two main-thread responses without rate limits hide the reading in this session only; the store is kept', async ($, on) => {
+  const stored = { windows: [{ ...WEEK, percentUsed: 20 }], at: 5, origin: 99 }
+  const store: Record<string, unknown> = { reading: stored }
+  const w = deletingWorld(on, store)
+  await startSession($)
+  const ui = await footer($, 200)
+  await respond($)
+  // Another loop's response does not count.
+  await respond($, 'agent-1')
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['context'] })
   expect(await row(ui)).toMatch(/^week /)
-  await $.session.measure({ context: { window: 200_000, tokens: 2000, percent: 1 }, rateLimits: [], changed: ['context'] })
+  await respond($)
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['context'] })
   expect(await row(ui)).toBe('')
-  expect(store.reading).toBeUndefined()
+  expect(store.reading).toEqual(stored)
   expect((await runCommand($)).text).toBe('No subscription usage in this session (no rate limits).')
   // Another session's reading is not taken here afterwards.
   store.reading = { windows: [{ ...WEEK, percentUsed: 30 }], at: 9000, origin: 99 }
   await w.clock.advance(8000)
   expect(await row(ui)).toBe('')
+})
+
+test('a subscription whose rate limits arrive in a later measure keeps its reading', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  deletingWorld(on, store)
+  await startSession($)
+  const ui = await footer($, 200)
+  await respond($)
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['context'] })
+  await measure($, [FIVE, WEEK])
+  await respond($)
+  await $.session.measure({ context: FILL, rateLimits: [], changed: ['context'] })
+  expect(await row(ui)).toMatch(/^5h /)
+  expect(store.reading).toBeDefined()
 })
 
 test('once this session had rate limits, a later response without them keeps the reading', async ($, on) => {

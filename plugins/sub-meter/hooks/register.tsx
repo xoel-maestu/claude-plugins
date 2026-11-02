@@ -42,10 +42,15 @@ let rotateTimer: Timer | undefined
 let origin = 0
 let isInteractive = true
 let hintWidth = 0
-// This session's own reading: whether it had rate limits, and whether a response came without any
-// (an API key, say), after which no reading is drawn or taken from the store.
+// This session's own reading: whether it had rate limits, how many main-thread responses it had,
+// and whether two came without any (an API key, say), after which no reading is drawn here or taken
+// from the store. The store is left alone: other sessions may be on a subscription.
 let isOwnSeen = false
 let isOff = false
+let responses = 0
+// Responses of the main thread without the windows after which this session is taken as off a
+// subscription. `rateLimits` is empty before the first reading too (a resumed session, say).
+const LEAST_RESPONSES = 2
 // The card's text as last drawn, so the tick writes `drawnAt` only when it changes.
 let drawnText: string | null = null
 let language: Language = 'en'
@@ -112,13 +117,12 @@ async function remember ($: EngineInterface, rateLimits: Parameters<typeof windo
 }
 
 /**
- * A response of this session came without the two windows before it ever had them: no subscription
- * here. The reading goes, from the meter and from the store, so no session keeps showing it.
+ * This session had its responses without the windows, never having had them: no subscription here.
+ * The reading is hidden in this session only; the store keeps it for the others.
  */
 async function forget ($: EngineInterface) {
   isOff = true
   if ((await read($, reading)) !== null) await update($, reading, () => null)
-  await $.store.delete(STORED).catch(() => {})
 }
 
 /**
@@ -181,12 +185,16 @@ export const register: Register = (on, options) => {
 
   stopTimers()
   hintWidth = 0
+  drawnText = null
+  responses = 0
 
   on('session.start', async ($, e, next) => {
     stopTimers()
     isInteractive = e.isInteractive
     isOwnSeen = false
     isOff = false
+    responses = 0
+    drawnText = null
     await $.command.register({
       name: 'sub-meter',
       description: language === 'es' ? 'Muestra el uso de la suscripción' : 'Show the subscription usage',
@@ -211,10 +219,17 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     startTimers($)
     if (e.changed.includes('rateLimits')) await remember($, e.rateLimits)
-    // A fill means a response came in; without the windows, and none seen before, no subscription.
-    if (!isOwnSeen && e.context.tokens !== undefined && windowsOf(e.rateLimits).length === 0) await forget($)
+    // Enough main-thread responses without the windows, and none seen before: no subscription here.
+    if (!isOwnSeen && !isOff && responses >= LEAST_RESPONSES && windowsOf(e.rateLimits).length === 0) await forget($)
     await refreshCard($)
     return next(e)
+  })
+
+  // Counts the main thread's responses; a step with an agentId is another loop's. Passed on untouched.
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    if (e.agentId === undefined && result.usage !== null) responses += 1
+    return result
   })
 
   on('command.run', { command: 'sub-meter' }, async $ => {
