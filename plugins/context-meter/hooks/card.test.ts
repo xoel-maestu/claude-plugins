@@ -17,7 +17,7 @@ const FILL = { percent: 62, tokens: 124_300, window: 200_000, isEstimate: false 
 test('the card line reads tokens over window, the percentage and the autocompact point', () => {
   const card = cardOf(FILL, 167_000, 'en')
   expect(card?.line).toBe('Context  124.3k / 200k  62%   autocompact at ~167k')
-  expect(card?.bar.filled + card!.bar.empty).toBe(card!.line.length)
+  expect(card!.bar.filled + card!.bar.empty).toBe(card!.line.length)
 })
 
 test('without an autocompact point the part is left out', () => {
