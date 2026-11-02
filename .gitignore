@@ -1,7 +1,14 @@
 .claude-plugin/types/
 plugins/*/.claude-plugin/types/
 node_modules/
-.DS_Store
 *.log
+
+# OS and editor files
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
 *~
 *.swp
+.idea/
+.vscode/
