@@ -1,14 +1,18 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage, SessionCost, Timer, TurnUsage } from 'claude-code'
 
 import type { ContextMeterFill } from '../types'
 
-import { CARD_WIDTH, cardOf, cardText } from './card'
-import type { Language, Tone } from './card'
+import { cardOf, cardText } from './card'
+import type { CardView, Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
+import { EMPTY, add, since } from './ledger'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
 const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, null as number | null)
+// In $.state, so a reload of the plugin keeps the session's counts.
+const ledger = atom({ plugin: 'context-meter', key: 'ledger' } as const, EMPTY)
+const cost = atom({ plugin: 'context-meter', key: 'cost' } as const, null as number | null)
 
 const SYNC_MS = 2000
 const SEPARATOR = ' · '
@@ -115,9 +119,38 @@ async function sync ($: EngineInterface, context: SessionContextUsage, canCount:
   }
 }
 
+/** Writes the session's cost only when it changed. */
+async function showCost ($: EngineInterface, next: SessionCost | undefined) {
+  const usd = next?.usd ?? null
+  if ((await read($, cost)) !== usd) await update($, cost, () => usd)
+}
+
+/** Empties the ledger when it counts from another session start than the live one (/clear, another session). */
+async function keepSession ($: EngineInterface, startedAt: number) {
+  const kept = await read($, ledger)
+  if (since(kept, startedAt) !== kept) await update($, ledger, () => ({ ...EMPTY, startedAt }))
+}
+
+/** A main-thread response: its counts become the last request and add to the session. */
+async function record ($: EngineInterface, usage: TurnUsage) {
+  const [{ startedAt, cost: spent }, now] = await Promise.all([$.session.usage(), $.clock.now()])
+  await update($, ledger, state => add(since(state, startedAt), usage, now))
+  await showCost($, spent)
+}
+
+/** Everything the card shows. */
+async function viewOf ($: EngineInterface): Promise<CardView> {
+  const [shown, threshold, counted, spent] = await Promise.all([read($, fill), read($, compactAt), read($, ledger), read($, cost)])
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent }
+}
+
 /** The 2 s resync: the plain usage call is free and catches resumes and rewinds, which raise no measure. */
 function startTimer ($: EngineInterface) {
-  timer ??= $.clock.every(SYNC_MS, async () => { await sync($, (await $.session.usage()).context, true) })
+  timer ??= $.clock.every(SYNC_MS, async () => {
+    const usage = await $.session.usage()
+    await showCost($, usage.cost)
+    await sync($, usage.context, true)
+  })
 }
 
 export const register: Register = (on, options) => {
@@ -145,7 +178,10 @@ export const register: Register = (on, options) => {
     })
     // Counting would hold up the start: the first count waits for the first check.
     isCompactAtStale = true
-    await sync($, (await $.session.usage()).context, false)
+    const usage = await $.session.usage()
+    await keepSession($, usage.startedAt)
+    await showCost($, usage.cost)
+    await sync($, usage.context, false)
     startTimer($)
     return next(e)
   })
@@ -156,6 +192,8 @@ export const register: Register = (on, options) => {
       stretch += 1
       isCompactAtStale = true
       await update($, fill, () => null)
+      // The counts start over; the next response takes the new session start.
+      await update($, ledger, () => EMPTY)
     } else {
       timer?.cancel()
       timer = undefined
@@ -165,8 +203,18 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     startTimer($)
+    if (e.changed.includes('cost')) await showCost($, e.cost)
     if (e.changed.includes('context')) await sync($, e.context, true)
     return next(e)
+  })
+
+  // Each response of the main thread feeds the ledger. A step with an agentId is another loop's
+  // (a subagent, a teammate, a workflow agent, or the engine's own forks: compaction, memory) and
+  // counts nothing. The stream is passed on untouched; the counts are read from its result.
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    if (e.agentId === undefined && result.usage !== null) await record($, result.usage)
+    return result
   })
 
   // A compaction of the main conversation opens a new stretch: the next check estimates anew.
@@ -187,8 +235,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'context-meter' }, async $ => {
-    await sync($, (await $.session.usage()).context, true)
-    return { text: cardText(await read($, fill), await read($, compactAt), language) }
+    const usage = await $.session.usage()
+    await keepSession($, usage.startedAt)
+    await showCost($, usage.cost)
+    await sync($, usage.context, true)
+    return { text: cardText(await viewOf($), language) }
   })
 
   // The hint line beside the mode label: its width says how much of the row is left. Drawn as it is.
@@ -240,9 +291,10 @@ export const register: Register = (on, options) => {
   // the band holds. Hidden until the meter's group is hovered. With nothing to show, the band is
   // left as it was, so it gets no row of its own.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const [shown, threshold, beneath] = await Promise.all([read($, fill), read($, compactAt), next(e)])
+    const [view, beneath] = await Promise.all([viewOf($), next(e)])
+    const shown = view.fill
     if (shown === null || e.props.hasSurvey) return beneath
-    const card = cardOf(shown, threshold, language, Math.min(CARD_WIDTH, e.props.bodyColumns))
+    const card = cardOf(view, language, e.props.bodyColumns)
     if (card === null) return beneath
 
     const { Box, Text } = $.ui.resolve(e)
