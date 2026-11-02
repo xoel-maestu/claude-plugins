@@ -30,6 +30,14 @@ Install either one or both. sub-meter replaces the sub-meter of [midudev/better-
 
 Tested with Claude Code 2.1.316. The hover cards need a terminal with mouse reporting; the slash commands work everywhere.
 
+## Uninstall
+
+```
+/plugin uninstall context-meter@xoel-plugins
+/plugin uninstall sub-meter@xoel-plugins
+/plugin marketplace remove xoel-plugins
+```
+
 ## Development
 
 ```

@@ -190,7 +190,7 @@ function seeTranscript (e: { transcript_path?: string; agent_id?: string }) {
  * on Windows, or it fails) the whole file through `$.fs.read`, up to 4 MiB. Undefined when neither works.
  */
 async function readTail ($: EngineInterface, path: string, size: number): Promise<string | undefined> {
-  const run = await $.process.run(['tail', '-c', String(TAIL), path], { timeoutMs: 5000 }).catch(() => undefined)
+  const run = await $.process.run(['tail', '-c', String(TAIL), '--', path], { timeoutMs: 5000 }).catch(() => undefined)
   if (run !== undefined && run.exitCode === 0 && !run.isStdoutTruncated) return completeLines(run.stdout, size > TAIL)
   if (size > MAX_READ) return undefined
   return await $.fs.read(path).catch(() => undefined) as string | undefined
