@@ -3,7 +3,9 @@ import type { EngineInterface, Register, RenderNode, RenderViewport, SessionCont
 
 import type { ContextMeterFill } from '../types'
 
-import { cardOf, cardText } from './card'
+import { EMPTY as NO_CACHE, cleared, markCompact, observe, since as cacheSince, ttlOf } from './cache'
+import type { TtlSetting } from './cache'
+import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
 import { EMPTY, add, since } from './ledger'
@@ -13,8 +15,12 @@ const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, n
 // In $.state, so a reload of the plugin keeps the session's counts.
 const ledger = atom({ plugin: 'context-meter', key: 'ledger' } as const, EMPTY)
 const cost = atom({ plugin: 'context-meter', key: 'cost' } as const, null as number | null)
+const cache = atom({ plugin: 'context-meter', key: 'cache' } as const, NO_CACHE)
+// The time the card's countdown is drawn for: written by the tick only when the cache line changes.
+const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 
 const SYNC_MS = 2000
+const TICK_MS = 1000
 const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
@@ -28,6 +34,9 @@ const SCOPE = 'context-meter'
 // compaction and /clear, so a count that began before one is stale), the stretch last estimated,
 // and the hint line's width as last drawn on the terminal.
 let timer: Timer | undefined
+let ticker: Timer | undefined
+let ttlSetting: TtlSetting = 'auto'
+let drawnStatus = ''
 let isCounting = false
 let countedWindow = 0
 let isCompactAtStale = true
@@ -125,26 +134,46 @@ async function showCost ($: EngineInterface, next: SessionCost | undefined) {
   if ((await read($, cost)) !== usd) await update($, cost, () => usd)
 }
 
-/** Empties the ledger when it counts from another session start than the live one (/clear, another session). */
+/** Empties the ledger and the cache when they count from another session start than the live one (/clear, another session). */
 async function keepSession ($: EngineInterface, startedAt: number) {
-  const kept = await read($, ledger)
+  const [kept, cached] = await Promise.all([read($, ledger), read($, cache)])
   if (since(kept, startedAt) !== kept) await update($, ledger, () => ({ ...EMPTY, startedAt }))
+  if (cacheSince(cached, startedAt) !== cached) await update($, cache, state => cacheSince(state, startedAt))
 }
 
 /** The recordings of main-thread responses, one after another. */
 let recording: Promise<void> = Promise.resolve()
 
-/** A main-thread response: its counts become the last request and add to the session. */
+/** Queued after the recordings before it, so a compaction or a /clear lands between the right requests. */
+const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(work).then(() => {}, () => {}) }
+
+/** A main-thread response: its counts become the last request and add to the session; the cache checks it for a loss. */
 async function record ($: EngineInterface, usage: TurnUsage) {
-  const [{ startedAt, cost: spent }, now] = await Promise.all([$.session.usage(), $.clock.now()])
+  const [{ startedAt, cost: spent, rateLimits }, now] = await Promise.all([$.session.usage(), $.clock.now()])
   await update($, ledger, state => add(since(state, startedAt), usage, now))
+  await update($, cache, state => observe(cacheSince(state, startedAt), usage, now, rateLimits.length > 0, ttlSetting))
   await showCost($, spent)
 }
 
-/** Everything the card shows. */
-async function viewOf ($: EngineInterface): Promise<CardView> {
-  const [shown, threshold, counted, spent] = await Promise.all([read($, fill), read($, compactAt), read($, ledger), read($, cost)])
-  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent }
+/** Everything the card shows; `now` is the time the countdown is drawn for, the tick's unless given. */
+async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
+  const [shown, threshold, counted, spent, cached, tick] = await Promise.all([
+    read($, fill), read($, compactAt), read($, ledger), read($, cost), read($, cache), read($, drawnAt),
+  ])
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl: ttlOf(cached, ttlSetting), now: now ?? tick }
+}
+
+/**
+ * The countdown's tick: the cache line is worked out every second and the time written only when the
+ * line changes (each second while the cache is active, each minute once it expired, never without a
+ * cache), so the card redraws no more than its text does and no hook runs on hover.
+ */
+async function tick ($: EngineInterface) {
+  const [cached, now] = await Promise.all([read($, cache), $.clock.now()])
+  const line = cacheStatus(cached, ttlOf(cached, ttlSetting), now, 'en')
+  if (line === drawnStatus) return
+  drawnStatus = line
+  await update($, drawnAt, () => now)
 }
 
 /** The 2 s resync: the plain usage call is free and catches resumes and rewinds, which raise no measure. */
@@ -154,6 +183,14 @@ function startTimer ($: EngineInterface) {
     await showCost($, usage.cost)
     await sync($, usage.context, true)
   })
+  ticker ??= $.clock.every(TICK_MS, () => tick($))
+}
+
+function stopTimers () {
+  timer?.cancel()
+  timer = undefined
+  ticker?.cancel()
+  ticker = undefined
 }
 
 export const register: Register = (on, options) => {
@@ -163,10 +200,11 @@ export const register: Register = (on, options) => {
   const warnAt = Math.min(warnSetting, dangerSetting)
   const dangerAt = Math.max(warnSetting, dangerSetting)
   const language: Language = options.language === 'es' ? 'es' : 'en'
+  ttlSetting = options.cacheTtl === '5m' || options.cacheTtl === '1h' ? options.cacheTtl : 'auto'
   const colorFor = (percent: number) => (percent >= dangerAt ? 'error' : percent >= warnAt ? 'warning' : undefined)
 
-  timer?.cancel()
-  timer = undefined
+  stopTimers()
+  drawnStatus = ''
   recording = Promise.resolve()
   isCounting = false
   countedWindow = 0
@@ -198,9 +236,12 @@ export const register: Register = (on, options) => {
       await update($, fill, () => null)
       // The counts start over; the next response takes the new session start.
       await update($, ledger, () => EMPTY)
+      enqueue(async () => {
+        const now = await $.clock.now()
+        await update($, cache, () => cleared(now))
+      })
     } else {
-      timer?.cancel()
-      timer = undefined
+      stopTimers()
     }
     return next(e)
   })
@@ -220,17 +261,19 @@ export const register: Register = (on, options) => {
     const result = yield* next(e)
     const usage = result.usage
     if (e.agentId === undefined && usage !== null) {
-      recording = recording.then(() => record($, usage)).catch(() => {})
+      enqueue(() => record($, usage))
     }
     return result
   })
 
-  // A compaction of the main conversation opens a new stretch: the next check estimates anew.
+  // A compaction of the main conversation opens a new stretch: the next check estimates anew. The
+  // cache hears it after the requests already queued, so the next request's loss is the compaction's.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (e.trigger !== 'precompute' && e.agentId === undefined && result.messages !== undefined) {
       stretch += 1
       isCompactAtStale = true
+      enqueue(() => update($, cache, markCompact))
     }
     return result
   })
@@ -249,7 +292,7 @@ export const register: Register = (on, options) => {
     await keepSession($, usage.startedAt)
     await showCost($, usage.cost)
     await sync($, usage.context, true)
-    return { text: cardText(await viewOf($), language) }
+    return { text: cardText(await viewOf($, await $.clock.now()), language) }
   })
 
   // The hint line beside the mode label: its width says how much of the row is left. Drawn as it is.

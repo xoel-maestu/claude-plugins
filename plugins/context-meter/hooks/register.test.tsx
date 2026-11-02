@@ -3,6 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, SessionContextUsage, SessionMessage, TurnUsage } from 'claude-code'
 
+import { clockTime } from './card'
+
 const WINDOW = 200_000
 
 const fill = (percent?: number): SessionContextUsage =>
@@ -30,6 +32,8 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
     startedAt: 0,
     cost: undefined as { usd: number } | undefined,
     usage: null as TurnUsage | null,
+    // Rate-limit windows: a subscription has some, an API key none.
+    rateLimits: [] as never[],
   }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -39,7 +43,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
   on('session.usage', async ($, e) => {
     if (e.breakdown === undefined) await live.plainHold
-    if (e.breakdown === undefined) return { value: { startedAt: live.startedAt, context: live.context, rateLimits: [], cost: live.cost } }
+    if (e.breakdown === undefined) return { value: { startedAt: live.startedAt, context: live.context, rateLimits: live.rateLimits, cost: live.cost } }
     live.counts += 1
     live.onCount()
     const b = live.breakdown
@@ -51,7 +55,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
       isAutoCompactEnabled: b.threshold !== undefined,
       autoCompactThreshold: b.threshold,
     }
-    return { value: { startedAt: live.startedAt, context: { ...live.context, breakdown: counted }, rateLimits: [], cost: live.cost } as never }
+    return { value: { startedAt: live.startedAt, context: { ...live.context, breakdown: counted }, rateLimits: live.rateLimits, cost: live.cost } as never }
   })
   // The model's response to a request: no text, the counts in live.usage.
   on('turn.step', async function* ($, e) {
@@ -233,7 +237,7 @@ test('reads the autocompact point again after /clear', async ($, on) => {
   w.live.breakdown = { percentage: 60, totalTokens: 120_000, threshold: 150_000 }
   await $.session.end({ reason: 'clear' } as never)
   await measure($, 62)
-  expect((await runCommand($)).text?.split('\n')).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompact at ~150k'])
+  expect((await runCommand($)).text?.split('\n').slice(0, 3)).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompact at ~150k'])
 })
 
 test('reads the autocompact point again when autocompact is switched in /config', async ($, on) => {
@@ -415,8 +419,8 @@ test("keeps the engine's mode labels after the meter", async ($, on) => {
   expect(await row(ui)).toEqual(['ctx ', '━━━━', '── ', '62%', ' · '])
 })
 
-const counts = (input: number, cacheRead: number, cacheWrite: number, output: number): TurnUsage =>
-  ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, model: 'model-a' })
+const counts = (input: number, cacheRead: number, cacheWrite: number, output: number, model = 'model-a'): TurnUsage =>
+  ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, model })
 
 /** One model request, the main thread's or, with `agentId`, another loop's: its stream read to the end. */
 async function respond ($: Engine, w: ReturnType<typeof world>, usage: TurnUsage | null, agentId?: string) {
@@ -427,7 +431,15 @@ async function respond ($: Engine, w: ReturnType<typeof world>, usage: TurnUsage
   while (read.done !== true) read = await stream.next()
   return read.value
 }
-const tokenLines = async ($: Engine) => ((await runCommand($)).text ?? '').split('\n').slice(2)
+const commandLines = async ($: Engine) => ((await runCommand($)).text ?? '').split('\n').slice(2)
+/** The token rows /context-meter prints: what comes before the cache rows. */
+const tokenLines = async ($: Engine) => {
+  const rows = await commandLines($)
+  const at = rows.findIndex(line => /^Cach[eé]  /.test(line))
+  return at === -1 ? rows : rows.slice(0, at)
+}
+/** The cache rows /context-meter prints. */
+const cacheLines = async ($: Engine) => (await commandLines($)).filter((line, i, all) => i >= all.findIndex(row => /^Cach[eé]  /.test(row)))
 
 test('each main-thread response is the last request and adds to the session', async ($, on) => {
   const w = world(on, fill(62))
@@ -439,9 +451,10 @@ test('each main-thread response is the last request and adds to the session', as
   // The response goes on as it came.
   expect(result).toMatchObject({ stopReason: 'end_turn', usage: { input_tokens: 200 } })
   expect(await tokenLines($)).toEqual([
-    'Last request   in 200    cache read 104k   cache write 1k   out 500',
-    'Session        in 1.2k   cache read 204k   cache write 5k   out 2.5k',
-    'Cache hit      97%',
+    '               Input    Cache read   Cache write   Uncached   Output',
+    'Last request   105.2k   104k         1k            200        500',
+    'Session        210.2k   204k         5k            1.2k       2.5k',
+    'Cache hit      97% of input read from cache',
     'Cost           $0.80 (session, all agents)',
   ])
 })
@@ -460,9 +473,10 @@ test('a step returns without waiting for the recording; two quick steps count on
   release()
   w.live.plainHold = undefined
   expect(await tokenLines($)).toEqual([
-    'Last request   in 2k   cache read 0   cache write 0   out 20',
-    'Session        in 3k   cache read 0   cache write 0   out 30',
-    'Cache hit      0%',
+    '               Input   Cache read   Cache write   Uncached   Output',
+    'Last request   2k      0            0             2k         20',
+    'Session        3k      0            0             3k         30',
+    'Cache hit      0% of input read from cache',
   ])
 })
 
@@ -473,7 +487,7 @@ test("another loop's response (a subagent, a fork of the engine) changes nothing
   const before = await tokenLines($)
   await respond($, w, counts(9000, 9000, 9000, 9000), 'agent-1')
   expect(await tokenLines($)).toEqual(before)
-  expect(before[0]).toBe('Last request   in 1k   cache read 100k   cache write 4k   out 2k')
+  expect(before[1]).toMatch(/^Last request   105k +100k +4k +1k +2k$/)
 })
 
 test('a response without usage counts nothing; before any response there are no token rows', async ($, on) => {
@@ -497,7 +511,7 @@ test('/clear empties the ledger, and a new session start is counted from zero', 
   // The engine moves the start with /clear: what came before it is not added.
   w.live.startedAt = 60_000
   await respond($, w, counts(10, 20, 30, 40))
-  expect((await tokenLines($))[1]).toBe('Session        in 10   cache read 20   cache write 30   out 40')
+  expect((await tokenLines($))[2]).toBe('Session        60      20           30            10         40')
 })
 
 test('a reload keeps the counts in $.state', async ($, on) => {
@@ -513,9 +527,10 @@ test('a reload keeps the counts in $.state', async ($, on) => {
   world(on, fill(62))
   await startSession($)
   expect(await tokenLines($)).toEqual([
-    'Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k',
-    'Session        in 31k    cache read 2.1M   cache write 160k   out 88k',
-    'Cache hit      92%',
+    '               Input    Cache read   Cache write   Uncached   Output',
+    'Last request   124.3k   118k         5.1k          1.2k       2.4k',
+    'Session        2.3M     2.1M         160k          31k        88k',
+    'Cache hit      92% of input read from cache',
   ])
 })
 
@@ -529,43 +544,203 @@ const withRequests = async ($: Engine, on: On) => {
   await respond($, w, w.live.usage)
 }
 
-test('the band card at 120 columns: the token rows in full, the card as wide as they need', async ($, on) => {
+test('the band card at 120 columns: the table in full, the cache rows after it', async ($, on) => {
   await withRequests($, on)
   const { box, rows } = await cardIn(await band($, 115))
-  expect(box?.props).toMatchObject({ width: 78, height: 8 })
+  expect(box?.props).toMatchObject({ width: 71, height: 11 })
   expect(rows.map(row => row.trimEnd())).toEqual([
     ' Context   124k / 200k   62%',
-    ' ' + '━'.repeat(46) + '─'.repeat(28),
-    ' Last request   in 29.8k   cache read 2M     cache write 154.9k   out 85.6k',
-    ' Session        in 31k     cache read 2.1M   cache write 160k     out 88k',
-    ' Cache hit      92%',
+    ' ' + '━'.repeat(42) + '─'.repeat(25),
+    '                Input   Cache read   Cache write   Uncached   Output',
+    ' Last request   2.2M    2M           154.9k        29.8k      85.6k',
+    ' Session        2.3M    2.1M         160k          31k        88k',
+    ' Cache hit      92% of input read from cache',
     ' Cost           $4.12 (session, all agents)',
+    ' Cache          active, expires in 05:00 (TTL 5m)',
+    ' No cache losses this session',
   ])
 })
 
-test('the band card at 60 columns: each token row in two lines, none wrapping', async ($, on) => {
+test('the band card at 60 columns: Uncached and Cache write left out, none wrapping', async ($, on) => {
   await withRequests($, on)
   const { box, rows } = await cardIn(await band($, 55))
   const width = box?.props?.width as number
   expect(width).toBeLessThanOrEqual(55)
   expect(rows.every(row => row.length === width - 2)).toBe(true)
   expect(rows.slice(2).map(row => row.trimEnd())).toEqual([
-    ' Last request   in 29.8k   out 85.6k',
-    '                cache read 2M     cache write 154.9k',
-    ' Session        in 31k     out 88k',
-    '                cache read 2.1M   cache write 160k',
-    ' Cache hit      92%',
+    '                Input   Cache read   Output',
+    ' Last request   2.2M    2M           85.6k',
+    ' Session        2.3M    2.1M         88k',
+    ' Cache hit      92% of input read from cache',
     ' Cost           $4.12 (session, all agents)',
+    ' Cache          active, expires in 05:00 (TTL 5m)',
+    ' No cache losses this session',
   ])
 })
 
 test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on) => {
   await withRequests($, on)
   const { rows } = await cardIn(await band($, 115))
-  expect(rows.slice(2).map(row => row.trim())).toEqual([
-    'Última petición    entrada 29.8k   caché leída 2M     caché escrita 154.9k   salida 85.6k',
-    'Sesión             entrada 31k     caché leída 2.1M   caché escrita 160k     salida 88k',
-    'Acierto de caché   92%',
-    'Coste              $4.12 (sesión, todos los agentes)',
+  expect(rows.slice(2).map(row => row.trimEnd())).toEqual([
+    '                     Entrada   Caché leída   Caché escrita   Sin caché   Salida',
+    ' Última petición     2.2M      2M            154.9k          29.8k       85.6k',
+    ' Sesión              2.3M      2.1M          160k            31k         88k',
+    ' Acierto de caché    92% de la entrada leída de caché',
+    ' Coste               $4.12 (sesión, todos los agentes)',
+    ' Caché               activa, expira en 05:00 (TTL 5m)',
+    ' Sin pérdidas de caché en esta sesión',
+  ])
+})
+
+const MIN = 60_000
+
+test('a loss per cause: a compaction, another model, a pause past the TTL, else invalidated', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 100_000, 10))
+  // A main-thread /compact; the precompute one and a subagent's are not counted.
+  await $.session.compact({ trigger: 'precompute', messages: [summary] } as never)
+  await $.session.compact({ trigger: 'manual', agentId: 'agent-1', messages: [summary] } as never)
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 90_000, 10))
+  expect((await cacheLines($))[1]).toMatch(/^Cache losses   \d\d:\d\d  −100k  invalidated \(prompt or tools changed\)$/)
+  await $.session.compact({ trigger: 'manual', messages: [summary] })
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 80_000, 10))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 70_000, 10, 'model-b'))
+  // Past the 5m TTL of a session without rate limits.
+  await w.clock.advance(67 * MIN)
+  await respond($, w, counts(5, 0, 60_000, 10, 'model-b'))
+  const at = (minutes: number) => clockTime(minutes * MIN)
+  expect(await cacheLines($)).toEqual([
+    'Cache          active, expires in 05:00 (TTL 5m)',
+    `Cache losses   ${at(70)}  −70k   idle 1h07m > TTL`,
+    `               ${at(3)}  −80k   model changed`,
+    `               ${at(2)}  −90k   /compact`,
+    `               ${at(1)}  −100k  invalidated (prompt or tools changed)`,
+  ])
+})
+
+test('the countdown runs down each second and turns to expired', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
+  // A subscription: 1h, drawn again each second.
+  await w.clock.advance(1000)
+  expect(await status()).toBe(' Cache          active, expires in 59:59 (TTL 1h)')
+  await w.clock.advance(1000)
+  expect(await status()).toBe(' Cache          active, expires in 59:58 (TTL 1h)')
+})
+
+test('without rate limits the cache lives 5m and then reads as expired', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  const status = async () => (await cardIn(await band($))).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
+  await w.clock.advance(4 * MIN + 30_000)
+  expect(await status()).toBe(' Cache          active, expires in 00:30 (TTL 5m)')
+  await w.clock.advance(MIN + 40_000)
+  expect(await status()).toBe(' Cache          expired 1m ago')
+})
+
+test('cacheTtl 5m stands on a subscription', { options: { cacheTtl: '5m' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toBe('Cache          active, expires in 05:00 (TTL 5m)')
+  await w.clock.advance(6 * MIN)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[1]).toMatch(/idle 6m > TTL$/)
+})
+
+test('cacheTtl 1h: no expiry within the hour, counted in h:mm:ss', { options: { cacheTtl: '1h' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toBe('Cache          active, expires in 1:00:00 (TTL 1h)')
+  await w.clock.advance(30 * MIN)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[1]).toMatch(/invalidated/)
+})
+
+test('auto TTL switches to 1h after a hit past a 5 minute pause', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(6 * MIN)
+  await respond($, w, counts(5, 50_000, 1000, 10))
+  expect(await cacheLines($)).toEqual(['Cache          active, expires in 1:00:00 (TTL 1h)', 'No cache losses this session'])
+})
+
+test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  for (let i = 0; i < 13; i++) {
+    await w.clock.advance(MIN)
+    await respond($, w, counts(5, 0, 10_000 + i * 1000, 10))
+  }
+  const { rows } = await cardIn(await band($))
+  expect(rows.filter(row => row.includes('−'))).toHaveLength(5)
+  const printed = await cacheLines($)
+  expect(printed.filter(line => line.includes('−'))).toHaveLength(10)
+  // Newest first: the last request lost the 21k written before it.
+  expect(printed[1]).toMatch(/−21k/)
+})
+
+test('/clear starts the cache over with a marker as the first history line', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(MIN)
+  await $.session.end({ reason: 'clear' } as never)
+  await measure($, 62)
+  expect(await cacheLines($)).toEqual(['Cache          no cache yet', `Cleared at ${clockTime(2 * MIN)}`, 'No cache losses this session'])
+  // The first request after it has no previous prefix: no loss.
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 40_000, 10))
+  expect((await cacheLines($)).slice(1)).toEqual([
+    `Cache losses   Cleared at ${clockTime(2 * MIN)}`,
+    `               ${clockTime(3 * MIN)}  −50k  invalidated (prompt or tools changed)`,
+  ])
+})
+
+test('the cache rows in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(10 * MIN)
+  await respond($, w, counts(5, 0, 40_000, 10))
+  expect(await cacheLines($)).toEqual([
+    'Caché               activa, expira en 05:00 (TTL 5m)',
+    `Pérdidas de caché   ${clockTime(10 * MIN)}  −50k  inactiva 10m > TTL`,
+  ])
+})
+
+test('a reload keeps the cache and its losses in $.state', async ($, on) => {
+  on('state.get', ($, e, next) => (e as { key: string }).key === 'cache'
+    ? { value: { value: {
+        startedAt: 0,
+        last: { prefix: 60_000, model: 'model-a', at: 0 },
+        isCompactPending: false,
+        isSubscription: false,
+        isLongSeen: true,
+        losses: [{ at: 0, lost: 112_000, cause: 'expired', gap: 67 * MIN }],
+      }, version: 3 } }
+    : next(e))
+  world(on, fill(62))
+  await startSession($)
+  expect(await cacheLines($)).toEqual([
+    'Cache          active, expires in 1:00:00 (TTL 1h)',
+    `Cache losses   ${clockTime(0)}  −112k  idle 1h07m > TTL`,
   ])
 })
