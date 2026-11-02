@@ -11,7 +11,7 @@ Hover the meter to open a card with the detail; `/context-meter` prints the same
 ```
 ╭────────────────────────────────────────────────────────────────────────────────╮
 │ Context   124.3k / 200k   62%                                                  │
-│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──────────────────────────────  │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━────────────────────────────── │
 │ Autocompact at ~167k                                                           │
 │ Last request   in 1.2k   cache read 118k   cache write 5.1k   out 2.4k         │
 │ Session        in 31k    cache read 2.1M   cache write 160k   out 88k    $4.12 │
