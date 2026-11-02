@@ -251,18 +251,21 @@ export const register: Register = (on, options) => {
     const toneProps = (tone: Tone) =>
       tone === 'meter' ? { color, dimColor: isDim } : tone === 'dim' ? { dimColor: true } : {}
 
-    // The anchor: in the flow after what the band holds, as wide as the band and no row tall, so
-    // the card's bottom right is the band's (an engine node may not sit under a Box that sets a
-    // width, so the anchor is apart from it). The padding is drawn as spaces in each row, so every
-    // cell inside the border is written over what lies beneath (the theme has no background key).
+    // The card sits in the flow, after what the band holds, in a holder as wide as the band that
+    // pushes it to the right end. The holder is hidden (no row) until the hover group lights: a
+    // card floated out of the flow is clipped by the band on the terminal (seen in a real session),
+    // so the card takes its rows while shown. An engine node may not sit under a Box that sets a
+    // width, so the holder is apart from it. The padding is drawn as spaces in each row.
     return (
       <Box flexDirection="column">
         {beneath}
-        <Box width={e.props.bodyColumns} height={0}>
+        <Box
+          width={e.props.bodyColumns} justifyContent="flex-end"
+          display="none" hover={{ scope: SCOPE, display: 'flex' }}
+        >
           <Box
-            position="absolute" bottom={0} right={0} width={card.width} height={card.height}
+            width={card.width} height={card.height}
             flexDirection="column" borderStyle="round" borderDimColor
-            display="none" hover={{ scope: SCOPE, display: 'flex' }}
           >
             {card.rows.map(cells => (
               <Box flexDirection="row">
