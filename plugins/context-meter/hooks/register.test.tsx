@@ -1,14 +1,14 @@
 // Mod tests, run against the engine itself: `claude plugin test .`. Every figure is synthetic.
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, SessionContextUsage } from 'claude-code'
+import type { On, SessionContextUsage, SessionMessage } from 'claude-code'
 
 const WINDOW = 200_000
 
 const fill = (percent?: number): SessionContextUsage =>
   percent === undefined ? { window: WINDOW } : { window: WINDOW, tokens: (WINDOW * percent) / 100, percent }
 
-const summary = { role: 'user', text: 'Summary of the conversation so far.', toolUses: [] } as const
+const summary: SessionMessage = { role: 'user', text: 'Summary of the conversation so far.', toolUses: [] }
 
 type Breakdown = { percentage: number; totalTokens: number; threshold?: number; raw?: number } | null
 
@@ -22,7 +22,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 'test-session' }) as never)
-  on('session.compact', () => ({ messages: [summary] }))
+  on('session.compact', () => ({ messages: [summary] }) as never)
   on('config.set', ($, e) => ({ value: e.value }))
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
   on('session.usage', async ($, e) => {
@@ -197,6 +197,36 @@ test('the estimate is measured against the context window, as the figure is', as
   await startSession($)
   const result = await runCommand($)
   expect(result.text?.split('\n')[0]).toBe('Context  ~32k / 200k  ~16%')
+})
+
+test('reads the autocompact point again after a compaction', async ($, on) => {
+  const w = world(on, fill(), { percentage: 16, totalTokens: 32_000, threshold: 167_000 })
+  await startSession($)
+  await w.clock.advance(2000)
+  w.live.breakdown = { percentage: 6, totalTokens: 12_000, threshold: 150_000 }
+  await $.session.compact({ trigger: 'manual', messages: [summary] })
+  await w.clock.advance(2000)
+  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  ~12k / 200k  ~6%   autocompact at ~150k')
+})
+
+test('reads the autocompact point again after /clear', async ($, on) => {
+  const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  w.live.breakdown = { percentage: 60, totalTokens: 120_000, threshold: 150_000 }
+  await $.session.end({ reason: 'clear' } as never)
+  await measure($, 62)
+  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  124k / 200k  62%   autocompact at ~150k')
+})
+
+test('reads the autocompact point again when autocompact is switched in /config', async ($, on) => {
+  const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  w.live.breakdown = { percentage: 60, totalTokens: 120_000 }
+  await $.config.set({ key: 'autoCompact', value: false, previous: true, provider: { plugin: 'engine', tier: 'core' }, origin: { kind: 'composer' } } as never)
+  await w.clock.advance(2000)
+  expect((await runCommand($)).text?.split('\n')[0]).toBe('Context  124k / 200k  62%')
 })
 
 test('the hover card: hidden, above the meter, with the autocompact point', async ($, on) => {
