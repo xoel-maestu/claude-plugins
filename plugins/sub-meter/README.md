@@ -54,7 +54,7 @@ The hint parts are dropped whether or not the session has a subscription, as in 
 Beyond the original:
 
 - A reading whose windows are all past their reset is not drawn, nor taken from the store, and leaves `$.state`, so context-meter keeps no room for it. Tests: `a reading with every window past its reset…`, `a stored reading past its reset…`.
-- A session whose response comes without the two windows, before it ever had them (it is on an API key, say), drops the reading from the meter and from `$.store` and takes none from the store for the rest of the session; otherwise the last subscription reading would show there for good. A response is told by the measure carrying a context fill; the start, with no response yet, keeps the stored reading. Once the session had rate limits, a later measure without them changes nothing. Tests: `a response without rate limits, none seen before…`, `once this session had rate limits…`.
+- A session that had two main-thread responses (steps without an `agentId`, with token counts) without the two windows, before it ever had them (it is on an API key, say), hides the reading in that session only and takes none from the store for the rest of it; `$.store` is left alone, since other sessions may be on a subscription. `rateLimits` is empty before the first reading too, so a fill alone (a resumed session, before any response) or a single response changes nothing. Once the session had rate limits, a later measure without them changes nothing. Tests: `a resumed session with a fill…`, `two main-thread responses without rate limits…`, `a subscription whose rate limits arrive…`, `once this session had rate limits…`.
 
 ## The card
 
