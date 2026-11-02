@@ -1,0 +1,49 @@
+{
+  "name": "sub-meter",
+  "version": "0.1.0",
+  "description": "Subscription usage at the bottom right of the prompt: the 5-hour and weekly windows, with /sub-meter.",
+  "author": {
+    "name": "Xoel García Maestu",
+    "url": "https://github.com/xoel-maestu"
+  },
+  "homepage": "https://github.com/xoel-maestu/claude-plugins",
+  "repository": "https://github.com/xoel-maestu/claude-plugins",
+  "license": "MIT",
+  "keywords": ["usage", "subscription", "rate-limits", "status", "mod"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "display": {
+      "type": "string",
+      "title": "What the meter shows",
+      "description": "rotate: the 5-hour and weekly windows in turn. both: the two side by side. session: the 5-hour window only. week: the weekly window only.",
+      "options": ["rotate", "both", "session", "week"],
+      "default": "rotate"
+    },
+    "rotateSeconds": {
+      "type": "number",
+      "title": "Seconds per window",
+      "description": "How long each window shows before the meter switches to the other, with display set to rotate.",
+      "default": 8,
+      "min": 1
+    },
+    "hideCycleHint": {
+      "type": "boolean",
+      "title": "Hide the mode cycle hint",
+      "description": "Drop \"(shift+tab to cycle)\" from the hint line, to leave room for the meter.",
+      "default": true
+    },
+    "hideInterruptHint": {
+      "type": "boolean",
+      "title": "Hide the interrupt hint",
+      "description": "Drop \"esc to interrupt\" from the hint line while Claude works, to leave room for the meter.",
+      "default": true
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the labels and the /sub-meter output: en (English) or es (Spanish).",
+      "options": ["en", "es"],
+      "default": "en"
+    }
+  }
+}
