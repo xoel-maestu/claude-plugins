@@ -243,14 +243,35 @@ test('the cache rows after the table: the status, then the losses newest first, 
   ])
 })
 
-test('the card shows the 5 newest losses, the text all of them; a short band cuts the causes, not the figures', () => {
+test('the card shows the 5 newest losses, the text all of them; a short band shortens the causes, never cutting a word', () => {
   const many = { ...CACHE, losses: Array.from({ length: 10 }, (_, i) => ({ at: (10 - i) * MIN, lost: 10_000 + i, cause: 'invalidated' as const, gap: MIN })) }
   const view = { ...WITH_CACHE, cache: many }
   expect(trimmed(cardOf(view, 'en', 115)).filter(line => line.includes('−'))).toHaveLength(5)
   expect(cardText(view, 'en').split('\n').filter(line => line.includes('−'))).toHaveLength(10)
   const narrow = cardOf(WITH_CACHE, 'en', 55)!
   expect(lines(narrow).every(line => line.length === narrow.content)).toBe(true)
-  expect(trimmed(narrow).at(-1)).toBe(`               ${clockTime(10 * MIN)}  −20k   invalidated (prompt or`)
+  expect(trimmed(narrow).slice(-4)).toEqual([
+    `Cache losses   ${clockTime(140 * MIN)}  −112k  idle 1h07m > TTL`,
+    `               ${clockTime(62 * MIN)}  −98k   /compact`,
+    `               ${clockTime(40 * MIN)}  −50k   model changed`,
+    `               ${clockTime(10 * MIN)}  −20k   invalidated`,
+  ])
+  // Narrower: idle keeps its short form; a cause whose short form does not fit is left out whole.
+  const narrower = trimmed(cardOf(WITH_CACHE, 'en', 44)).slice(-5)
+  expect(narrower).toEqual([
+    `Cache          until ${clockTime(HOUR)} (TTL 1h)`,
+    `Cache losses   ${clockTime(140 * MIN)}  −112k  idle 1h07m`,
+    `               ${clockTime(62 * MIN)}  −98k   /compact`,
+    `               ${clockTime(40 * MIN)}  −50k`,
+    `               ${clockTime(10 * MIN)}  −20k   invalidated`,
+  ])
+  const es = trimmed(cardOf(WITH_CACHE, 'es', 55)).slice(-4)
+  expect(es).toEqual([
+    `Pérdidas de caché   ${clockTime(140 * MIN)}  −112k  inactiva 1h07m`,
+    `                    ${clockTime(62 * MIN)}  −98k   /compact`,
+    `                    ${clockTime(40 * MIN)}  −50k   cambio de modelo`,
+    `                    ${clockTime(10 * MIN)}  −20k   invalidada`,
+  ])
 })
 
 test('no losses: a sentence; after /clear the marker comes first', () => {
