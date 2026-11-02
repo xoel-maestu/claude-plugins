@@ -5,11 +5,13 @@ Claude Code mods by Xoel García Maestu, published as the `xoel-plugins` marketp
 | Plugin | What it shows |
 | --- | --- |
 | [context-meter](plugins/context-meter) | Context window fill at the bottom right of the prompt; detail card on hover and `/context-meter`. |
+| [sub-meter](plugins/sub-meter) | Subscription usage (5-hour and weekly windows) beside it; `/sub-meter`. |
 
 ## Install
 
 ```
 /plugin install context-meter --marketplace xoel-maestu/claude-plugins
+/plugin install sub-meter --marketplace xoel-maestu/claude-plugins
 ```
 
 ## Credits
