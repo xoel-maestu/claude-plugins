@@ -18,7 +18,7 @@ Hover the meter to open a card with the detail; `/context-meter` prints the same
 │ Session        200.5k   165.9k       34.6k         10         1.2k   │
 │ Cache hit      83% of input read from cache                          │
 │ Cost           $4.12 (session, all agents)                           │
-│ Cache          active, expires in 41:10 (TTL 1h)                     │
+│ Cache          active until 04:12 (in 41m, TTL 1h)                   │
 │ Cache losses   02:14  −112k  idle 1h07m > TTL                        │
 │                01:02  −98k   /compact                                │
 │                00:40  −50k   model changed                           │
@@ -49,7 +49,7 @@ The headers always show. On a band too narrow for even Input, Cache read and Out
 - The autocompact point comes from the same breakdown, read again with every estimate, when the window changes, and after a start, `/clear`, a compaction or an autocompact switch in `/config`; when auto-compaction is off or unknown its row is left out and the card is a row shorter.
 - The figure is read again every 2 s (a free call), to catch resumes and rewinds.
 - Colors: dim below `warnAt`, theme `warning` from `warnAt`, theme `error` from `dangerAt` (given the wrong way round, the two are swapped).
-- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them. **Input** is all the input: **Cache read** (served by the prompt cache), **Cache write** (written to it) and **Uncached** (the API's `input_tokens`). **Output** is the response. **Cost** is on its own row, labelled as the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is left out when the host reports no cost or a cost of 0 (as on a subscription). **Cache hit** is cache read over Input for the session. Before the first response these rows are left out, never shown as zeros.
+- **Last request** and **Session**: the main thread's last response and its sum over the session, as the API counted them. **Input** is all the input: **Cache read** (served by the prompt cache), **Cache write** (written to it) and **Uncached** (the API's `input_tokens`). **Output** is the response. **Cost** is on its own row, labelled as the whole session's cost with all agents (`$.session.usage().cost.usd`, subagents included), while the token rows count the main thread only. It is left out when the host reports no cost or a cost of 0 (as on a subscription); a cost under a cent reads `<$0.01`. **Cache hit** is cache read over Input for the session. Before the first response these rows are left out, never shown as zeros.
 - **Cache** and **Cache losses**: see below.
 - The counts live in `$.state` (`ledger`), so a reload of the plugin keeps them. They count from the session's start (`$.session.usage().startedAt`): `/clear` empties them, and a ledger written for another start is dropped.
 - Where the row is short the meter drops its bar (`ctx 62%`), then its prefix (`62%`), then itself. It takes 14 columns at most.
@@ -72,13 +72,15 @@ Each main-thread request is compared with the one before it. The previous cached
 3. `idle <pause> > TTL`: the pause since the previous request is longer than the TTL in force.
 4. `invalidated (prompt or tools changed)`: none of these; the system prompt, the tools or another part of the prefix changed.
 
+Where the band is too narrow for a cause, its short form is used (`/compact`, `model changed`, `idle 1h07m`, `invalidated`); where even that does not fit, the cause is left out. A word is never cut.
+
 The history keeps the 10 newest losses, newest first; the card shows the 5 newest and `/context-meter` all 10. `/clear` starts the cache over and its time shows as the first history line (`Cleared at 14:05`); it is not a loss.
 
-The TTL: `5m` or `1h` as set; under `auto`, 1h when the session has rate limits (a subscription), 5m otherwise, and 1h for the rest of the session once a request reads the cache back (`cache read ≥ P / 2`) after a pause of more than 5 minutes. The cache expires at the last main-thread request's time plus the TTL: `active, expires in mm:ss (TTL 1h)` (`h:mm:ss` from an hour), `expired 3m ago`, or `no cache yet`.
+The TTL: `5m` or `1h` as set; under `auto`, 1h when the session has rate limits (a subscription: seen on any usage read, the 2 s resync included, so a first request made before the host reports them turns 1h too), 5m otherwise, and 1h for the rest of the session once a request reads the cache back (`cache read ≥ P / 2`) after a pause of more than 5 minutes. The cache expires at the last main-thread request's time plus the TTL: `active until 04:12 (in 41m, TTL 1h)` (the expiry as a local time, then whole minutes left, `in <1m` in the last minute), `expired 3m ago` (`<1m`, then minutes, `1h07m` from an hour), or `no cache yet`. Where the band is narrow the active line reads `until 04:12 (TTL 1h)`.
 
 The cache is fed from the same queued recording as the token counts, after `turn.step` returns, and compactions and `/clear` go in the same queue, so each lands between the right requests. It lives in `$.state` (`cache`), so a reload keeps the losses and the TTL.
 
-The countdown: no hook runs on hover, so the card cannot know when it is shown. A 1 s timer works out the cache line and writes the time it is drawn for (`$.state` key `now`) only when that line changes: every second while the cache is active, every minute once it expired (seconds in its first minute), never with no cache. Only the band hook reads that key, so only it redraws, and while the card is hidden the redraw changes no cell. This is cheaper than a plain 1 s redraw and keeps the countdown exact to the second, so the 5 s fallback is not needed.
+The countdown: no hook runs on hover, so the card cannot know when it is shown. The cache line changes at most once a minute, so it needs no timer of its own: the 2 s resync works out the line and writes the time it is drawn for (`$.state` key `now`) only when the text changes, about once a minute. With no cache (before the first request, after `/clear`) it reads nothing. Only the band hook reads that key, so only it redraws, and while the card is hidden the redraw changes no cell.
 
 ## How the card is drawn
 
