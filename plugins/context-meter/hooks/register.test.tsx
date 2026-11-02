@@ -23,6 +23,8 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
     breakdown,
     counts: 0,
     hold: undefined as Promise<void> | undefined,
+    // Holds the plain usage call too, as a slow host would.
+    plainHold: undefined as Promise<void> | undefined,
     onCount: () => {},
     // The session start and cost the usage call reports, and the counts the next model response carries.
     startedAt: 0,
@@ -36,6 +38,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   on('config.set', ($, e) => ({ value: e.value }))
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
   on('session.usage', async ($, e) => {
+    if (e.breakdown === undefined) await live.plainHold
     if (e.breakdown === undefined) return { value: { startedAt: live.startedAt, context: live.context, rateLimits: [], cost: live.cost } }
     live.counts += 1
     live.onCount()
@@ -440,6 +443,26 @@ test('each main-thread response is the last request and adds to the session', as
     'Session        in 1.2k   cache read 204k   cache write 5k   out 2.5k',
     'Cache hit      97%',
     'Cost           $0.80 (session, all agents)',
+  ])
+})
+
+test('a step returns without waiting for the recording; two quick steps count once each', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  let release = () => {}
+  w.live.plainHold = new Promise(resolve => { release = resolve })
+  const late = Symbol('late')
+  // A step that waits for the held usage call never settles; one that does not, settles in a few ticks.
+  const ticks = async () => { for (let i = 0; i < 1000; i++) await Promise.resolve(); return late }
+  const within = <T,>(p: Promise<T>) => Promise.race([p, ticks()])
+  expect(await within(respond($, w, counts(1000, 0, 0, 10)))).not.toBe(late)
+  expect(await within(respond($, w, counts(2000, 0, 0, 20)))).not.toBe(late)
+  release()
+  w.live.plainHold = undefined
+  expect(await tokenLines($)).toEqual([
+    'Last request   in 2k   cache read 0   cache write 0   out 20',
+    'Session        in 3k   cache read 0   cache write 0   out 30',
+    'Cache hit      0%',
   ])
 })
 
