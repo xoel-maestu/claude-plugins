@@ -230,23 +230,24 @@ test('reads the autocompact point again when autocompact is switched in /config'
 })
 
 type Node = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
-/** The Box placed out of the flow in a drawing, if any. */
+/** The hidden Box a drawing reveals on hover (the card's holder), if any. */
 function placedIn (node: unknown): Node | undefined {
   if (node === null || typeof node !== 'object') return undefined
   const n = node as Node
-  if (n.props?.position === 'absolute') return n
+  if (n.props?.display === 'none') return n
   for (const child of n.children ?? []) {
     const found = placedIn(child)
     if (found !== undefined) return found
   }
   return undefined
 }
-/** The card the band draws: the Box placed out of the flow, and its rows as text. */
+/** The card the band draws: the hidden holder, the bordered Box in it, and its rows as text. */
 async function cardIn (ui: { drawn: () => Promise<unknown> }) {
-  const box = placedIn(await ui.drawn())
+  const holder = placedIn(await ui.drawn())
+  const box = holder?.children?.[0] as Node | undefined
   const text = (node: unknown): string =>
     typeof node === 'string' ? node : ((node as Node | null)?.children ?? []).map(text).join('')
-  return { box, rows: (box?.children ?? []).map(text) }
+  return { holder, box, rows: (box?.children ?? []).map(text) }
 }
 
 const band = ($: Engine, bodyColumns = 115, hasSurvey = false) =>
@@ -282,21 +283,19 @@ test('every cell the footer drawing holds is on the row, as a plugin above it wo
   expect(all(await (await footer($, 120)).drawn())).toBe(14)
 })
 
-test('the hover card, in the band: out of the flow at its bottom right, hidden, in the group, three rows', async ($, on) => {
+test('the hover card, in the band: last in the flow, right-aligned, hidden until the group lights, three rows', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
   const ui = await band($)
-  // Its anchor: the last in the flow, as wide as the band, no row tall.
   const drawn = (await ui.drawn()) as Node
-  expect(drawn.children?.at(-1)).toMatchObject({ props: { width: 115, height: 0 } })
-  const { box, rows } = await cardIn(ui)
-  expect(box?.props).toMatchObject({
-    position: 'absolute', bottom: 0, right: 0, width: 40, height: 5,
-    borderStyle: 'round', borderDimColor: true, display: 'none',
-  })
-  expect(box?.hover).toEqual({ scope: 'context-meter', display: 'flex' })
-  expect(box?.props?.top).toBeUndefined()
+  const { holder, box, rows } = await cardIn(ui)
+  // The holder: the last in the flow, as wide as the band, pushing the card to its right end.
+  expect(drawn.children?.at(-1)).toEqual(holder)
+  expect(holder?.props).toMatchObject({ width: 115, justifyContent: 'flex-end', display: 'none' })
+  expect(holder?.hover).toEqual({ scope: 'context-meter', display: 'flex' })
+  expect(box?.props).toMatchObject({ width: 40, height: 5, borderStyle: 'round', borderDimColor: true })
+  expect(box?.props?.position).toBeUndefined()
   // Each row is the content (36) with a column of padding at each side: the border's inside.
   expect(rows).toEqual([
     ' ' + 'Context   124k / 200k   62%'.padEnd(36) + ' ',
@@ -305,7 +304,7 @@ test('the hover card, in the band: out of the flow at its bottom right, hidden, 
   ])
 })
 
-test('the band keeps what is beneath it first in the flow, the card adding no row', async ($, on) => {
+test('the band keeps what is beneath it first in the flow, the card hidden after it', async ($, on) => {
   // Beneath: another plugin's line in the band.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -317,11 +316,10 @@ test('the band keeps what is beneath it first in the flow, the card adding no ro
   const drawn = (await (await band($)).drawn()) as Node
   expect(drawn.children).toHaveLength(2)
   expect(drawn.children?.[0]).toMatchObject({ type: 'Text', children: ['other plugin'] })
-  // The rest is the anchor, 0 rows, holding only the card out of the flow.
-  const anchor = drawn.children?.[1] as Node
-  expect(anchor.props).toMatchObject({ height: 0 })
-  expect(anchor.children).toHaveLength(1)
-  expect((anchor.children?.[0] as Node).props).toMatchObject({ position: 'absolute' })
+  // The rest is the card's holder, hidden (no row) until the hover group lights.
+  const holder = drawn.children?.[1] as Node
+  expect(holder.props).toMatchObject({ display: 'none' })
+  expect(holder.children).toHaveLength(1)
 })
 
 test('with no figure the band is passed through as it came, so it gets no blank row', async ($, on) => {
@@ -344,7 +342,7 @@ test('the card leaves out the autocompact row when the breakdown has none, a row
   await startSession($)
   await measure($, 62)
   const { box, rows } = await cardIn(await band($))
-  expect(box?.props).toMatchObject({ bottom: 0, height: 4 })
+  expect(box?.props).toMatchObject({ height: 4 })
   expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
 })
 
