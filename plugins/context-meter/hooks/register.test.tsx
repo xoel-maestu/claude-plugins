@@ -691,6 +691,22 @@ test('without rate limits the cache lives 5m and then reads as expired', async (
   expect(await status()).toBe(' Cache          expired 1m ago')
 })
 
+test('rate limits that show up after the first request make the TTL 1h, for the request already made', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m)`)
+  // The subscription's windows arrive with a later usage read, not with a request.
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  await w.clock.advance(2000)
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(HOUR)} (in 59m, TTL 1h)`)
+  // Once seen it stays, even if a later read has none.
+  w.live.rateLimits = []
+  await w.clock.advance(2000)
+  await respond($, w, counts(5, 50_000, 0, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\)$/)
+})
+
 test('cacheTtl 5m stands on a subscription', { options: { cacheTtl: '5m' } }, async ($, on) => {
   const w = world(on, fill(62))
   w.live.rateLimits = [{ window: 'five_hour' }] as never

@@ -37,6 +37,8 @@ let ttlSetting: TtlSetting = 'auto'
 let drawnStatus = ''
 // Whether the cache has a request to show; while it has none the tick reads nothing.
 let hasCache = false
+// Whether the cache already counts the session as a subscription (rate limits seen).
+let isSubscriptionSeen = false
 let isCounting = false
 let countedWindow = 0
 let isCompactAtStale = true
@@ -155,7 +157,18 @@ async function record ($: EngineInterface, usage: TurnUsage) {
   await update($, ledger, state => add(since(state, startedAt), usage, now))
   await update($, cache, state => observe(cacheSince(state, startedAt), usage, now, rateLimits.length > 0, ttlSetting))
   hasCache = true
+  if (rateLimits.length > 0) isSubscriptionSeen = true
   await showCost($, spent)
+}
+
+/**
+ * Rate limits from any usage read mark the session a subscription: the first request may come before
+ * the host has any, and the TTL in force (worked out when drawn) then turns 1h for it too.
+ */
+function seeRateLimits ($: EngineInterface, rateLimits: readonly unknown[]) {
+  if (rateLimits.length === 0 || isSubscriptionSeen) return
+  isSubscriptionSeen = true
+  enqueue(() => update($, cache, state => (state.isSubscription ? state : { ...state, isSubscription: true })))
 }
 
 /** Everything the card shows; `now` is the time the countdown is drawn for, the tick's unless given. */
@@ -185,6 +198,8 @@ function startTimer ($: EngineInterface) {
   timer ??= $.clock.every(SYNC_MS, async () => {
     const usage = await $.session.usage()
     await showCost($, usage.cost)
+    seeRateLimits($, usage.rateLimits)
+    await recording
     await sync($, usage.context, true)
     await tick($)
   })
@@ -208,6 +223,7 @@ export const register: Register = (on, options) => {
   stopTimers()
   drawnStatus = ''
   hasCache = false
+  isSubscriptionSeen = false
   recording = Promise.resolve()
   isCounting = false
   countedWindow = 0
@@ -243,6 +259,7 @@ export const register: Register = (on, options) => {
         const now = await $.clock.now()
         await update($, cache, () => cleared(now))
         hasCache = false
+        isSubscriptionSeen = false
       })
     } else {
       stopTimers()
@@ -252,6 +269,7 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     startTimer($)
+    seeRateLimits($, e.rateLimits)
     if (e.changed.includes('cost')) await showCost($, e.cost)
     if (e.changed.includes('context')) await sync($, e.context, true)
     return next(e)
