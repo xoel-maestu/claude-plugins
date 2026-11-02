@@ -8,26 +8,32 @@ const WINDOW = 200_000
 const fill = (percent?: number): SessionContextUsage =>
   percent === undefined ? { window: WINDOW } : { window: WINDOW, tokens: (WINDOW * percent) / 100, percent }
 
-type Breakdown = { percentage: number; totalTokens: number; threshold?: number } | null
+const summary = { role: 'user', text: 'Summary of the conversation so far.', toolUses: [] } as const
+
+type Breakdown = { percentage: number; totalTokens: number; threshold?: number; raw?: number } | null
 
 /**
  * Everything beneath the mod: the session's usage, the summary breakdown it counts (null when there
- * is none), how many counts were asked, the commands registered and what the engine draws.
+ * is none), how many counts were asked, the commands registered and what the engine draws. `hold`,
+ * when set, keeps a count waiting until it resolves.
  */
 function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakdown = null) {
-  const live = { context, breakdown, counts: 0 }
+  const live = { context, breakdown, counts: 0, hold: undefined as Promise<void> | undefined }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 'test-session' }) as never)
+  on('session.compact', () => ({ messages: [summary] }))
+  on('config.set', ($, e) => ({ value: e.value }))
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
-  on('session.usage', ($, e) => {
+  on('session.usage', async ($, e) => {
     if (e.breakdown === undefined) return { value: { startedAt: 0, context: live.context, rateLimits: [] } }
     live.counts += 1
     const b = live.breakdown
+    await live.hold
     const counted = b === null ? undefined : {
       percentage: b.percentage,
       totalTokens: b.totalTokens,
-      rawMaxTokens: WINDOW,
+      rawMaxTokens: b.raw ?? WINDOW,
       isAutoCompactEnabled: b.threshold !== undefined,
       autoCompactThreshold: b.threshold,
     }
@@ -99,6 +105,14 @@ test('takes its thresholds from the settings', { options: { warnAt: 40, dangerAt
   expect(await (await footer($)).find({ type: 'Text', text: '45%' })).toMatchObject({ props: { color: 'warning' } })
   await measure($, 60)
   expect(await (await footer($)).find({ type: 'Text', text: '60%' })).toMatchObject({ props: { color: 'error' } })
+})
+
+test('a warnAt above dangerAt is swapped, so the warning color stays', { options: { warnAt: 80, dangerAt: 60 } }, async ($, on) => {
+  world(on, fill(65))
+  await startSession($)
+  expect(await (await footer($)).find({ type: 'Text', text: '65%' })).toMatchObject({ props: { color: 'warning' } })
+  await measure($, 80)
+  expect(await (await footer($)).find({ type: 'Text', text: '80%' })).toMatchObject({ props: { color: 'error' } })
 })
 
 test('at 200, 120 and 80 columns with the usual hint the bar fits', async ($, on) => {

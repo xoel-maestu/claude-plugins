@@ -96,8 +96,11 @@ function startTimer ($: EngineInterface) {
 }
 
 export const register: Register = (on, options) => {
-  const warnAt = typeof options.warnAt === 'number' ? options.warnAt : 50
-  const dangerAt = typeof options.dangerAt === 'number' ? options.dangerAt : 75
+  const warnSetting = typeof options.warnAt === 'number' ? options.warnAt : 50
+  const dangerSetting = typeof options.dangerAt === 'number' ? options.dangerAt : 75
+  // Given the wrong way round the two are swapped, so the warning color still has its band.
+  const warnAt = Math.min(warnSetting, dangerSetting)
+  const dangerAt = Math.max(warnSetting, dangerSetting)
   const language: Language = options.language === 'es' ? 'es' : 'en'
   const colorFor = (percent: number) => (percent >= dangerAt ? 'error' : percent >= warnAt ? 'warning' : undefined)
 
