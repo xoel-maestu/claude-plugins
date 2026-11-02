@@ -1,7 +1,7 @@
 // Transcript parsing, run with `claude plugin test .`: synthetic JSONL lines only.
 import { expect, test } from 'claude-code/testing'
 
-import { completeLines, lastTtl } from './transcript'
+import { completeLines, lastResponse, lastTtl } from './transcript'
 
 /** A main-thread (or, with `extra`, another) assistant entry writing `m5` and `h1` tokens to the cache. */
 const assistant = (m5: number, h1: number, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -52,4 +52,10 @@ test('a cut tail drops its first, partial line; a whole file keeps it', () => {
   expect(completeLines('tial"}\n{"a":1}\n', true)).toBe('{"a":1}\n')
   expect(completeLines('{"a":1}\n', false)).toBe('{"a":1}\n')
   expect(completeLines('no newline', true)).toBe('')
+})
+
+test('the last main-thread response gives its cache counts with its TTL, so a read can tell it is the latest', () => {
+  expect(lastResponse(jsonl(assistant(0, 17_000), user, assistant(0, 0)))).toEqual({ ttl: null, cacheRead: 100, cacheWrite: 0 })
+  expect(lastResponse(jsonl(assistant(0, 17_000), assistant(0, 9000, { isSidechain: true })))).toEqual({ ttl: '1h', cacheRead: 100, cacheWrite: 17_000 })
+  expect(lastResponse(jsonl(user))).toBeNull()
 })

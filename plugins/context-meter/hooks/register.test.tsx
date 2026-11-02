@@ -807,10 +807,11 @@ test('a reload keeps the cache and its losses in $.state', async ($, on) => {
 // The session transcript the classic hook events point at, served by fs hooks beneath the mod.
 // Synthetic JSONL: usage fields only, no message text.
 const TRANSCRIPT = '/synthetic/session.jsonl'
-const entry = (m5: number, h1: number, extra: Record<string, unknown> = {}) => JSON.stringify({
+/** A main-thread response's entry: `m5` and `h1` tokens written to the cache, `cacheRead` read from it. */
+const entry = (m5: number, h1: number, extra: Record<string, unknown> = {}, cacheRead = 0) => JSON.stringify({
   type: 'assistant',
   isSidechain: false,
-  message: { usage: { cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } } },
+  message: { usage: { cache_read_input_tokens: cacheRead, cache_creation_input_tokens: m5 + h1, cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } } },
   ...extra,
 })
 /**
@@ -1008,4 +1009,27 @@ test('the subscription cost row in Spanish', { options: { language: 'es' } }, as
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
   expect((await tokenLines($)).at(-1)).toBe('Coste               ≈ $0.004 a precio de lista de la API (no se factura en tu plan)')
+})
+
+test('the transcript written after Stop is read on the next resync: the band card shows TTL 1h without ?', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  await startWithTranscript($)
+  await measure($, 62)
+  const ui = await band($)
+  const status = async () => (await cardIn(ui)).rows.find(row => row.startsWith(' Cache  '))?.trimEnd()
+  // A turn: the response comes in, the turn ends, and only then does the host write the response.
+  file.lines.push(JSON.stringify({ type: 'user', isSidechain: false }))
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await stop($)
+  expect(await status()).toMatch(/TTL 1h\?\)$/)
+  file.lines.push(entry(0, 50_000))
+  await w.clock.advance(2000)
+  expect(await status()).toMatch(/TTL 1h\)$/)
+  // Once the turn's response is read, the resync reads no more until the next turn ends.
+  const tails = file.tails
+  file.lines.push(JSON.stringify({ type: 'system', isSidechain: false }))
+  await w.clock.advance(10_000)
+  expect(file.tails).toBe(tails)
 })

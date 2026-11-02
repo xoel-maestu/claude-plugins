@@ -9,7 +9,7 @@ import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { barOf, fit, label } from './fit'
 import { EMPTY, add, since } from './ledger'
-import { MAX_READ, TAIL, completeLines, lastTtl } from './transcript'
+import { MAX_READ, TAIL, completeLines, lastResponse } from './transcript'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
 const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, null as number | null)
@@ -47,6 +47,9 @@ let isSubscriptionSeen = false
 // last read at a turn's end: a file the same size is not read again.
 let transcriptPath: string | undefined
 let transcriptSize = -1
+// Whether the turn that ended last still waits for its last response in the transcript: the host
+// writes the transcript after the Stop event, so the read at a turn's end may come before it.
+let isTranscriptDue = false
 let isCounting = false
 let countedWindow = 0
 let isCompactAtStale = true
@@ -174,18 +177,26 @@ async function readTail ($: EngineInterface, path: string, size: number): Promis
 
 /**
  * The TTL the last main-thread cache write used, from the session transcript's end: read at the end
- * of each main turn, when its size changed. A pure read keeps the TTL before it; a failed read
- * changes nothing. A new TTL is stored for the next session.
+ * of each main turn and, until the transcript holds that turn's last response (the one the ledger
+ * last counted), again on each 2 s resync, each time only when its size changed. A pure read keeps
+ * the TTL before it; a failed read changes nothing. A new TTL is stored for the next session.
  */
 async function readTranscript ($: EngineInterface) {
   const path = transcriptPath
-  if (path === undefined) return
+  if (path === undefined || !isTranscriptDue) return
   const stat = await $.fs.stat(path).catch(() => undefined)
   if (stat === undefined || stat.kind !== 'file' || stat.size === transcriptSize) return
   const text = await readTail($, path, stat.size)
   if (text === undefined || path !== transcriptPath) return
   transcriptSize = stat.size
-  const ttl = lastTtl(text)
+  const found = lastResponse(text)
+  const last = (await read($, ledger)).last
+  // No request to wait for, or the transcript has it: done until the next turn ends.
+  if (last === undefined || (found !== null && found.cacheRead === last.cacheRead && found.cacheWrite === last.cacheWrite)) {
+    isTranscriptDue = false
+  }
+  // An earlier response's TTL stands until this turn's is written.
+  const ttl = found?.ttl ?? null
   if (ttl === null) return
   const cached = await read($, cache)
   if (observeTtl(cached, ttl) !== cached) await update($, cache, state => observeTtl(state, ttl))
@@ -272,6 +283,7 @@ function startTimer ($: EngineInterface) {
     const usage = await $.session.usage()
     await showCost($, usage.cost)
     seeRateLimits($, usage.rateLimits)
+    if (isTranscriptDue) enqueue(() => readTranscript($))
     await recording
     await sync($, usage.context, true)
     await tick($)
@@ -306,6 +318,7 @@ export const register: Register = (on, options) => {
   hintWidth = 0
   transcriptPath = undefined
   transcriptSize = -1
+  isTranscriptDue = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -365,7 +378,8 @@ export const register: Register = (on, options) => {
   })
 
   // The classic hook events carry the transcript's path: the start (a /clear's new file too) and each
-  // prompt give it; the end of a main-thread turn reads the transcript, its last response written by then.
+  // prompt give it; the end of a main-thread turn reads the transcript, and the resync reads it again
+  // until the turn's last response is written there (the host writes it after Stop).
   on('classic.SessionStart', async ($, e, next) => {
     seeTranscript(e)
     return next(e)
@@ -376,7 +390,10 @@ export const register: Register = (on, options) => {
   })
   on('classic.Stop', async ($, e, next) => {
     seeTranscript(e)
-    if (e.agent_id === undefined) enqueue(() => readTranscript($))
+    if (e.agent_id === undefined) {
+      isTranscriptDue = true
+      enqueue(() => readTranscript($))
+    }
     return next(e)
   })
 
