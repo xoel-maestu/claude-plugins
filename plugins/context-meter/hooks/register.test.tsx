@@ -1861,3 +1861,131 @@ test('no room is kept for a sub-meter reading past its reset, which sub-meter do
   await hint($, '? for shortcuts')
   expect((await row(await footer($, 66))).join('')).toBe('ctx ━━━━── 62%')
 })
+
+// The timeline: written through fs hooks beneath the mod, synthetic usage only.
+function timelineFiles (on: On, existing = '', isUnreadable = false) {
+  const files: Record<string, string> = { '/synthetic/session/context-meter.jsonl': existing }
+  on('fs.stat', ($, e) => (files[e.path] !== undefined && files[e.path] !== ''
+    ? { value: { kind: 'file', size: files[e.path]!.length, mtimeMs: 0, isLink: false } }
+    : { value: { kind: 'other', size: 0, mtimeMs: 0, isLink: false } }) as never)
+  on('fs.read', ($, e) => {
+    const text = files[e.path]
+    if (text === undefined || text === '' || isUnreadable) throw new Error(isUnreadable ? 'EFBIG' : 'ENOENT')
+    return { value: text } as never
+  })
+  on('fs.write', ($, e) => {
+    files[(e as { path: string }).path] = (e as { text: string }).text
+    return { value: {} } as never
+  })
+  on('classic.SessionStart', () => ({}))
+  on('tool.call', () => ({ result: 'synthetic' }) as never)
+  const lines = () => (files['/synthetic/session/context-meter.jsonl'] ?? '').split('\n').filter(line => line !== '').map(line => JSON.parse(line))
+  return { files, lines }
+}
+
+test('timeline on: a line per request beside the transcript, with the tools run since the last one; the prompt never in it', { options: { timeline: true } }, async ($, on) => {
+  const t = timelineFiles(on)
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await $.tool.call({ tool: 'Bash', command: 'SECRET-PROMPT-WORDS' } as never)
+  await w.clock.advance(1500)
+  await respond($, w, counts(5, 50_000, 500, 10, 'claude-sonnet-5-5'))
+  await respond($, w, counts(2, 0, 20_000, 10, 'claude-haiku-5-5'), 'a1')
+  await runCommand($)
+  const lines = t.lines()
+  expect(lines.map(line => [line.scope, line.session, line.model])).toEqual([
+    ['main', 'session', 'claude-sonnet-5-5'],
+    ['main', 'session', 'claude-sonnet-5-5'],
+    ['agent', 'session', 'claude-haiku-5-5'],
+  ])
+  expect(lines[0].tools).toBeUndefined()
+  expect(lines[1].tools).toEqual([{ name: 'Bash', ms: 0 }])
+  expect(lines[2]).toMatchObject({ agent: 'a1', agentType: 'Explore', ttl: '5m', ttlInferred: true })
+  expect(t.files['/synthetic/session/context-meter.jsonl']).not.toContain('SECRET')
+})
+
+test('timeline on: a load starts from the lines already in the file', { options: { timeline: true } }, async ($, on) => {
+  const t = timelineFiles(on, '{"schema":1,"old":true}\n')
+  const w = world(on, fill(62))
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await runCommand($)
+  expect(t.lines().map(line => line.old === true ? 'old' : line.scope)).toEqual(['old', 'main'])
+})
+
+test('timeline off (the default): nothing is written', async ($, on) => {
+  const t = timelineFiles(on)
+  const w = world(on, fill(62))
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await runCommand($)
+  expect(t.files['/synthetic/session/context-meter.jsonl']).toBe('')
+})
+
+test('timeline on: an existing file that cannot be read (over 4 MiB, an error) is left alone, never replaced', { options: { timeline: true } }, async ($, on) => {
+  const t = timelineFiles(on, '{"schema":1,"old":true}\n', true)
+  const w = world(on, fill(62))
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await runCommand($)
+  expect(t.files['/synthetic/session/context-meter.jsonl']).toBe('{"schema":1,"old":true}\n')
+})
+
+test('timeline on: a tool run before /clear lands on no line after it', { options: { timeline: true } }, async ($, on) => {
+  const t = timelineFiles(on)
+  const w = world(on, fill(62))
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await $.tool.call({ tool: 'Read', file_path: '/x' } as never)
+  await $.session.end({ reason: 'clear' } as never)
+  await respond($, w, counts(5, 0, 50_000, 10, 'claude-sonnet-5-5'))
+  await runCommand($)
+  expect(t.lines().map(line => line.tools)).toEqual([undefined, undefined])
+})
+
+test('a new message sends a picked agent back to the main card; /context-meter <n> counts the agents as the card lists them', async ($, on) => {
+  on('classic.UserPromptSubmit', () => ({}))
+  const w = world(on, fill(62))
+  w.live.agentList = [
+    { id: 'p', type: 'general-purpose', name: 'lead', description: '', status: 'running' },
+    { id: 'c', type: 'Explore', name: 'scout', description: '', status: 'running', parentId: 'p' } as never,
+    { id: 'q', type: 'Plan', name: 'planner', description: '', status: 'running' },
+  ]
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'p')
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'c')
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'q')
+  // The card lists the main thread's agents, planner then lead; scout is lead's.
+  expect(((await run($, '2')).text ?? '').split('\n')[0]).toBe('Main › lead · model-a')
+  const ui = await band($, 115)
+  await ui.press({ key: 'agent:q' })
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › planner/)
+  await $.classic.UserPromptSubmit({ prompt: 'synthetic' } as never)
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Context /)
+})
+
+test('after /clear the estimate comes at once, not at the next check', async ($, on) => {
+  const w = world(on, fill(62), { percentage: 20, totalTokens: 40_000 })
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  // After /clear the host has no figure for the new window yet.
+  w.live.context = fill()
+  await $.session.end({ reason: 'clear' } as never)
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  // No 2 s tick has run: the footer already shows the new estimate.
+  const ui = await footer($)
+  expect((await row(ui)).join('')).toMatch(/~/)
+})

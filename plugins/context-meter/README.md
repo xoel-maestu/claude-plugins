@@ -32,12 +32,12 @@ The card, with the pointer on the meter:
 - **Last request** and **Session**: the main thread's tokens for its last response and summed over the session. **Input** is all the input, split into **Cache read**, **Cache write** and **Uncached**; **Output** is the response. Subagents are not counted here.
 - **Cache hit**: the share of the session's input read from the prompt cache, then the last request's own share against the request before it: `↑4` and `↓28` in points, `=` unchanged, `(model switch)` when another model answered it (another model's cache is not comparable). Left out when there is no request before it to compare with (none, or one that sent no input on the same model); shortened to `· 92% ↑4` where the band is narrow, then dropped.
 - **Cost**: the session's cost with all agents, as `/cost` reports it, to four decimals under a dollar as `/cost` prints it. It is an estimate at API list prices. On a subscription the row says it is not billed on your plan.
-- **Cache saved**: what the prompt cache saved on input at API list prices. A cache write costs more than sending the tokens uncached (1.25× the base input rate at 5m, 2× at 1h) and a read far less (0.1×, 0.05× on Opus 5.5 and Sonnet 5.5, 0.025× on Fable 5.1 and Mythos 5.1), so a prefix pays off once it is read back. The row is what all the input would have cost uncached (at the base input rate), less what it cost (cache reads, cache writes at each thread's TTL, uncached input), and that as a share of the uncached cost (`68% less than without the cache`). It is negative (`12% more than without the cache`) when the writes cost more than the reads saved, and left out when it rounds to nothing. The main thread's card covers the whole session, as its Cost row does; an agent's card covers the agent alone. It is left out when a model is not in the price table (the figure would be partial).
+- **Cache saved**: what the prompt cache saved on input at API list prices. A cache write costs more than sending the tokens uncached (1.25× the base input rate at 5m, 2× at 1h) and a read far less (0.1×, 0.05× on Opus 5.5 and Sonnet 5.5, 0.025× on Fable 5.1 and Mythos 5.1), so a prefix pays off once it is read back. The row is what all the input would have cost uncached (at the base input rate), less what it cost (cache reads, cache writes at each thread's TTL, uncached input), and that as a share of the uncached cost (`68% less than without the cache`). It is negative (`12% more than without the cache`) when the writes cost more than the reads saved, and left out when it rounds to nothing. The main thread's card covers the requests the plugin sees (the main thread's and every agent's), an agent's card the agent alone. Claude Code's own requests are not in it, nor in Models: a compaction's summary, titles and suggestions. The Cost row, Claude Code's own figure, includes them. It is left out when a model is not in the price table (the figure would be partial).
 - **Cache**: when the prompt cache expires (`active until 06:20 (in 59m, TTL 1h)`, `expired 3m ago`, `no cache yet`).
 - **Cache losses**: the last requests that did not read the previous cached prefix back, with the tokens lost, what getting them back cost at the answering model's list prices, and the cause. `rewrite` is what writing the lost tokens again cost in all (rewritten × the write rate of the TTL in force; a compaction writes fewer than it lost); `extra` is what that cost beyond reading them, had the cache held (rewritten × (write rate − read rate)): what the loss cost. Where the band is too narrow for a loss line, every line keeps only `extra`, so the columns stay aligned; a cause shortens only on a line that does not fit. The causes: `/compact`, `model changed`, `idle <pause> > TTL`, or `invalidated (prompt or tools changed)`. The card shows the five newest; `/context-meter` shows ten. `/clear` starts the history over.
 - **Agents**: one row per subagent or teammate of the session, the most recently active first (five in the card, up to 50 in `/context-meter`), named by its name, else the task description the Agent call gave it, else its type: its requests, input (split into cache read, cache write and uncached, as in the table above), output, cache hit and the model of its last response. **Subagents total** sums every subagent under the card's loop, at any depth, and **Main + subagents** (in an agent's card, **This agent + subagents**) adds the loop itself. The section shows only when a subagent has answered; the engine's own forks (memory, for example) are not in it.
 - **Models**: when more than one model answered in the card's loop or under it, one row per model with the same columns as Agents, the most requests first, and its **Cost** at API list prices, worked out from its token counts with each thread's cache writes at that thread's TTL (`–` for a model the price table lacks). A model is counted under the model that answered each request, so an agent that switched models counts under both. Counts kept by an earlier version, which did not tally models, leave the section out until a new session.
-- **An agent's card**: click an agent's name in the card to see the same card for it alone: its context, last request and session, cache hit, cost, its prompt cache (TTL and expiry), its cache losses, and the agents it spawned when it spawned any. A path at the top (`Main › lead › scout`) goes back up; each step is pressable. The main thread's card is framed in the theme's accent color, a subagent's in another, a subagent's subagent in a third. While an agent's transcript is open (from the tasks list) the card shows that agent, and a click moves the view. `/context-meter 2` or `/context-meter reviewer` prints an agent's card, by its place in the list or by name.
+- **An agent's card**: click an agent's name in the card to see the same card for it alone: its context, last request and session, cache hit, cost, its prompt cache (TTL and expiry), its cache losses, and the agents it spawned when it spawned any. A path at the top (`Main › lead › scout`) goes back up; each step is pressable. The main thread's card is framed in the theme's accent color, a subagent's in another, a subagent's subagent in a third. While an agent's transcript is open (from the tasks list) the card shows that agent, and a click moves the view. `/context-meter 2` or `/context-meter reviewer` prints an agent's card, by its place in the main card's list or by name (any agent, at any depth). A card picked with a click stays until `Main` is pressed or a new message is sent.
   - An agent's **cost** is worked out from its token counts at Anthropic's published [API list prices](https://platform.claude.com/docs/en/about-claude/pricing) (read 2026-11-03), with Haiku 5.5's higher rates for prompts over 100,000 tokens and each cache write at the agent's TTL. It is not the Batch API, fast mode or `inference_geo` rates. A model the table lacks is left out, and the amount then reads `≥`.
   - An agent's **TTL** is read from its own transcript (`<session>/subagents/agent-<id>.jsonl`). Until it shows one, it is inferred (`?`): the TTL another agent's transcript last showed, else 5m. Subagents have been seen writing 5-minute entries on a subscription whose main thread writes 1-hour ones.
 
@@ -66,6 +66,32 @@ Claude Code reports neither a model's context window other than the session mode
 
 A per-agent cost taken as the change in the session's cost around each of its responses was tried and dropped: Claude Code's own requests (titles, suggestions) land between them and are invisible to plugins, so they were charged to whichever agent answered next.
 
+## Timeline
+
+With `timeline` on, every request (the main thread's and each agent's) adds one JSON line to `context-meter.jsonl` in the session's folder, beside its transcript (`~/.claude/projects/<project>/<session>/context-meter.jsonl`, under `CLAUDE_CONFIG_DIR` where that is set). Lines are added as requests finish (sort by `at` for the order they were sent). The file keeps the newest 5,000 lines and stays with the session's folder; one that exists but cannot be read (over 4 MiB) is left alone. A line holds numbers, ids and names only: the model, the tool names and the agent's type, which for an MCP tool or a custom agent are the names given to them. Never the text of a prompt, a response, or a tool's input or output:
+
+| Field | |
+| --- | --- |
+| `schema` | `1` |
+| `at` | When the request started, local time with its offset |
+| `session` | The session id (the transcript's file name) |
+| `scope`, `agent`, `agentType` | `main`, or `agent` with the agent's id and type |
+| `model` | The model that answered |
+| `input`, `cacheRead`, `cacheWrite`, `output` | The API's token counts (`input` is the uncached part) |
+| `hit` | Cache read over all the input, 0 to 1 |
+| `ttl`, `ttlInferred` | The cache TTL in force, and whether it was inferred |
+| `cost` | The request at API list prices, its writes at `ttl` (absent for a model the price table lacks) |
+| `loss` | A cache loss: `cause`, `lost` tokens, `gapMs` since the request before, `rewrite` and `extra` in US dollars |
+| `tools` | The tools the loop ran before this request, since its previous one: `name` and `ms` |
+
+```bash
+F=~/.claude/projects/<project>/<session>/context-meter.jsonl
+# Hit rate per request, main thread
+jq -r 'select(.scope == "main") | [.at, .hit, .cacheRead, .cacheWrite] | @tsv' "$F"
+# Tokens and cost by agent
+jq -s 'map(select(.scope == "agent")) | group_by(.agent) | map({agent: .[0].agent, type: .[0].agentType, requests: length, cacheWrite: (map(.cacheWrite) | add), cost: (map(.cost // 0) | add)})' "$F"
+```
+
 ## Install
 
 ```
@@ -90,6 +116,7 @@ Set them in `/config`.
 | `warnAt` | `50` | Context percentage from which the meter uses the warning color (1 to 100). |
 | `dangerAt` | `75` | Context percentage from which the meter uses the error color (1 to 100). |
 | `language` | `en` | Language of the card and of `/context-meter`: `en` or `es`. |
+| `timeline` | `false` | Write one JSON line per request to the session's folder (see Timeline). |
 | `cacheAlert` | `true` | Color the `ctx` prefix as the main thread's prompt cache nears expiry and once it has expired. |
 | `cacheTtl` | `auto` | Prompt cache lifetime used for the countdown and for idle losses: `auto`, `5m` or `1h`. |
 
@@ -120,6 +147,8 @@ tsc -p plugins/context-meter
 `tsc` compiles against `.claude-plugin/types/`, which Claude Code writes when it loads the plugin with `--plugin-dir`. Those files are not committed, so CI runs `validate` and `test` but not `tsc`.
 
 ## Credits
+
+Several 1.1 features (the subagents' and models' tables, the hit-rate trend, the footer's TTL alert, what the cache saved, the timeline) take their ideas from [zhumengzhu/opencode-cache-hit](https://github.com/zhumengzhu/opencode-cache-hit) (MIT), a plugin for OpenCode. No code is taken from it.
 
 Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 

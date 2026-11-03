@@ -1,6 +1,6 @@
 {
   "name": "context-meter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
   "author": {
     "name": "Xoel García Maestu",
@@ -47,6 +47,12 @@
       "title": "Cache expiry alert",
       "description": "Color the meter's ctx prefix with the warning color in the last 10% of the main thread's prompt cache TTL (at least 30 seconds) and with the error color once it has expired.",
       "default": true
+    },
+    "timeline": {
+      "type": "boolean",
+      "title": "Timeline",
+      "description": "Write one JSON line per request (tokens, cache, cost at list prices, losses, tool durations; never any text) to context-meter.jsonl in the session's folder beside its transcript.",
+      "default": false
     }
   }
 }

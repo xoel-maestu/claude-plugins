@@ -3,14 +3,16 @@ import type { AgentInfo, EngineInterface, Register, RenderNode, RenderViewport, 
 
 import type { ContextMeterFill, ContextMeterTtl } from '../types'
 
-import { EMPTY as NO_CACHE, alertOf, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
+import { EMPTY as NO_CACHE, HOUR, alertOf, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
 import type { Alert, Cache, TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
-import { EMPTY as NO_AGENTS, add as addAgent, pathOf, seeTtl, since as agentsSince } from './agents'
+import { EMPTY as NO_AGENTS, add as addAgent, childrenOf, pathOf, seeTtl, since as agentsSince } from './agents'
 import { windowOf } from './pricing'
+import { MAX_LINES, lineOf, sessionOf, timelineOf, withLine } from './timeline'
+import type { TimelineInput, ToolTime } from './timeline'
 import { EMPTY, add, since } from './ledger'
 import { MAX_READ, TAIL, agentTranscriptOf, completeLines, lastResponse } from './transcript'
 
@@ -56,6 +58,12 @@ let drawnStatus = ''
 let drawnAlert: Alert | null | undefined
 /** Whether the footer warns of the cache's expiry (the `cacheAlert` setting). */
 let isAlertOn = true
+/** Whether each request is written to the session's timeline (the `timeline` setting). */
+let isTimelineOn = false
+let timelinePath: string | undefined
+let timelineLines: string[] = []
+/** Timeline files that exist but could not be read: never written over. */
+const timelineSkipped = new Set<string>()
 // Whether the cache has a request to show; while it has none the tick reads nothing.
 let hasCache = false
 // Whether the cache already counts the session as a subscription (rate limits seen).
@@ -283,12 +291,18 @@ const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(w
  * prompt caching docs count an entry's lifetime from the start of the request that writes or reads
  * it (https://platform.claude.com/docs/en/build-with-claude/prompt-caching, read 2026-11-03).
  */
-async function record ($: EngineInterface, usage: TurnUsage, at: number) {
+async function record ($: EngineInterface, usage: TurnUsage, at: number, trace: Trace = { tools: [], path: undefined }) {
   const { startedAt, cost: spent, rateLimits } = await $.session.usage()
   const before = since(await read($, ledger), startedAt)
   await update($, ledger, state => add(since(state, startedAt), usage, at))
   await update($, cache, state => observe(cacheSince(state, startedAt), usage, at, rateLimits.length > 0, ttlSetting))
   hasCache = true
+  if (isTimelineOn) {
+    const cached = await read($, cache)
+    const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
+    const loss = cached.losses[0]?.at === at ? cached.losses[0] : undefined
+    await writeTimeline($, trace.path, { at, usage, ttl: ttl >= HOUR ? '1h' : '5m', isTtlInferred: isInferred, ...(loss === undefined ? {} : { loss }), tools: trace.tools })
+  }
   if (rateLimits.length > 0) isSubscriptionSeen = true
   // Rate limits say a subscription; none by a second response say an API key (the first may come
   // before the host has any).
@@ -300,7 +314,7 @@ async function record ($: EngineInterface, usage: TurnUsage, at: number) {
  * A subagent's response to a request sent at `at`: added to its row when `$.agent.list()` names the
  * loop. A loop it does not name is one of the engine's own forks (memory, a summarizer), not counted.
  */
-async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsage, at: number) {
+async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsage, at: number, trace: Trace = { tools: [], path: undefined }) {
   const [{ startedAt, rateLimits }, main] = await Promise.all([$.session.usage(), read($, cache)])
   // The list is read only for an agent not seen yet: a known one stays counted once it is done.
   let info = seenAgents.get(agentId)
@@ -314,6 +328,52 @@ async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsag
   await update($, agents, state => addAgent(agentsSince(state, startedAt), known, usage, at, isSubscription, ttlSetting))
   const path = transcriptPath === undefined ? undefined : agentTranscriptOf(transcriptPath, agentId)
   if (path !== undefined) await readAgentTranscript($, agentId, path)
+  if (isTimelineOn) {
+    const row = (await read($, agents)).agents.find(agent => agent.id === agentId)
+    if (row !== undefined) {
+      const { ttl, isTtlInferred } = agentTtlOf(row.cache)
+      const loss = row.cache.losses[0]?.at === at ? row.cache.losses[0] : undefined
+      await writeTimeline($, trace.path, { at, agent: { id: agentId, type: known.type }, usage, ttl: ttl >= HOUR ? '1h' : '5m', isTtlInferred, ...(loss === undefined ? {} : { loss }), tools: trace.tools })
+    }
+  }
+}
+
+/** What a request carries to its recording: the tools its loop ran before it, and the session's file then. */
+type Trace = { tools: ToolTime[]; path: string | undefined }
+
+/** The tools each loop ran since its last request (undefined: the main thread), taken as its next request is sent. */
+const toolTimes = new Map<string | undefined, ToolTime[]>()
+const takeTools = (loop: string | undefined): ToolTime[] => {
+  const tools = toolTimes.get(loop) ?? []
+  toolTimes.delete(loop)
+  return tools
+}
+
+/**
+ * The timeline (option `timeline`): one JSON line per request in `<session>/context-meter.jsonl`,
+ * beside the session's transcript. $.fs writes whole files, so the lines are kept here and the file
+ * written again each time, the newest MAX_LINES. The first write to a file starts from what it holds;
+ * where it exists but cannot be read (over $.fs's 4 MiB, an error) it is left alone, never replaced.
+ */
+async function writeTimeline ($: EngineInterface, source: string | undefined, input: Omit<TimelineInput, 'session'>) {
+  const path = source === undefined ? undefined : timelineOf(source)
+  if (source === undefined || path === undefined || timelineSkipped.has(path)) return
+  if (timelinePath !== path) {
+    const stat = await $.fs.stat(path).catch(() => undefined)
+    let kept = ''
+    if (stat !== undefined && stat.kind === 'file') {
+      const text = await $.fs.read(path).catch(() => undefined) as string | undefined
+      if (text === undefined) {
+        timelineSkipped.add(path)
+        return
+      }
+      kept = text
+    }
+    timelineLines = kept.split('\n').filter(line => line !== '').slice(-MAX_LINES)
+    timelinePath = path
+  }
+  timelineLines = withLine(timelineLines, lineOf({ ...input, session: sessionOf(source) }))
+  await $.fs.write(path, timelineLines.join('\n') + '\n').catch(() => {})
 }
 
 /**
@@ -430,6 +490,11 @@ export const register: Register = (on, options) => {
   const language: Language = options.language === 'es' ? 'es' : 'en'
   ttlSetting = options.cacheTtl === '5m' || options.cacheTtl === '1h' ? options.cacheTtl : 'auto'
   isAlertOn = options.cacheAlert !== false
+  isTimelineOn = options.timeline === true
+  timelinePath = undefined
+  timelineLines = []
+  toolTimes.clear()
+  timelineSkipped.clear()
   const colorFor = (percent: number) => (percent >= dangerAt ? 'error' : percent >= warnAt ? 'warning' : undefined)
 
   stopTimers()
@@ -473,10 +538,14 @@ export const register: Register = (on, options) => {
       stretch += 1
       isCompactAtStale = true
       await update($, fill, () => null)
+      // Tools run before /clear belong to no request of the session after it.
+      toolTimes.clear()
       enqueue(async () => {
         // The counts start over after the responses already queued; the next takes the new session start.
         await update($, ledger, () => EMPTY)
         await update($, agents, state => ({ ...NO_AGENTS, ...(state.lastTtl === undefined ? {} : { lastTtl: state.lastTtl }) }))
+        // The new session's estimate at once, rather than at the next 2 s check: the meter is gone until it comes.
+        void $.session.usage().then(usage => sync($, usage.context, true)).catch(() => {})
         selectedId = undefined
         const now = await $.clock.now()
         // The TTL setting and the billing do not change with /clear: those readings are kept.
@@ -503,13 +572,30 @@ export const register: Register = (on, options) => {
   // The result goes back at once: the recording runs after it, chained so steps add in order.
   // A compaction's summarizer request is no step: it reaches only session.compact (seen in a real
   // session, Claude Code 2.1.317), so it never counts as the session's work.
+  // With the timeline on, how long each tool ran, for the loop's next request's line: the name and
+  // the time only, never its input or output.
+  on('tool.call', async ($, e, next) => {
+    if (!isTimelineOn) return next(e)
+    const started = await $.clock.now()
+    try {
+      return await next(e)
+    } finally {
+      const loop = (e as { agentId?: string }).agentId
+      const ms = (await $.clock.now()) - started
+      toolTimes.set(loop, [...(toolTimes.get(loop) ?? []), { name: String((e as { tool?: unknown }).tool ?? ''), ms }])
+    }
+  })
+
   on('turn.step', async function* ($, e, next) {
     const sentAt = await $.clock.now()
+    // The tools this loop ran since its last request, and the session's file, as they are now:
+    // the recording may run later, after more tools or a /clear.
+    const trace: Trace = { tools: takeTools(e.agentId), path: transcriptPath }
     const result = yield* next(e)
     const usage = result.usage
     const agentId = e.agentId
     if (usage !== null) {
-      enqueue(() => (agentId === undefined ? record($, usage, sentAt) : recordAgent($, agentId, usage, sentAt)))
+      enqueue(() => (agentId === undefined ? record($, usage, sentAt, trace) : recordAgent($, agentId, usage, sentAt, trace)))
     }
     return result
   })
@@ -523,6 +609,11 @@ export const register: Register = (on, options) => {
   })
   on('classic.UserPromptSubmit', async ($, e, next) => {
     seeTranscript(e)
+    // A new message: an agent picked on the card goes back to the main thread's card.
+    if (selectedId !== undefined) {
+      selectedId = undefined
+      $.ui.invalidate('ui.render')
+    }
     return next(e)
   })
   // A subagent's end: its transcript holds its last response, so its TTL is read once more.
@@ -574,7 +665,8 @@ export const register: Register = (on, options) => {
     let agentId: string | undefined
     if (wanted !== '') {
       const listed = (await read($, agents)).agents
-      const byNumber = /^\d+$/.test(wanted) ? listed[Number(wanted) - 1] : undefined
+      // The number counts the main thread's agents as the card lists them; a name, any agent.
+      const byNumber = /^\d+$/.test(wanted) ? childrenOf({ agents: listed } as never)[Number(wanted) - 1] : undefined
       const byName = listed.find(agent => agent.label.toLowerCase() === wanted.toLowerCase()) ??
         listed.find(agent => agent.label.toLowerCase().startsWith(wanted.toLowerCase()))
       const found = byNumber ?? byName

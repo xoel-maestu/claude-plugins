@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (2026-11-03)
 
 ### context-meter
 
+- An optional timeline (`timeline`): one JSON line per request, main thread and agents, in the session's folder: token counts, hit rate, TTL, cost at list prices, cache losses with their cost, and tool durations; never any text.
 - Each cache loss shows what writing the lost tokens again cost (`rewrite`) and what that cost beyond reading them (`extra`), at list prices.
 - A Cache saved row: what the prompt cache saved on input at API list prices, and as a share of the input's uncached cost; negative when the writes cost more. The whole session on the main card, the agent alone on an agent's.
 - The footer's `ctx` prefix takes the warning color in the last tenth of the main thread's cache TTL (at least 30 seconds) and the error color once it has expired; `cacheAlert` turns it off.
 - The Cache hit row adds the last request's hit rate and its change against the request before it (`↑4`, `↓28`, `=`, or `(model switch)`), in every card.
 - An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache read, cache write, uncached, output, cache hit, model), the total over every subagent, and the main thread and the subagents together. Shown once a subagent has answered; the engine's own forks are left out.
+- After `/clear` the new estimate is drawn at once instead of at the next 2-second check.
 - An agent's own card, the same as the main thread's: click its row (or open its transcript from the tasks list) to see its context, last request, session, cache hit, cost at API list prices, prompt cache TTL and expiry, cache losses, and the agents it spawned; `/context-meter <n|name>` prints it. A path at the top goes back up. Its TTL comes from its own transcript.
 - A Models section in each card: a row per model that answered in that loop or under it, with its cost at API list prices, shown when there is more than one.
 - The agents table's totals are named for what they sum: Subagents total, and Main + subagents (This agent + subagents in an agent's card).
