@@ -86,6 +86,12 @@ export type ContextMeterLoss = {
   lost: number
   cause: 'compact' | 'model' | 'expired' | 'invalidated'
   gap: number
+  /**
+   * What getting the lost tokens back cost, at list prices: written again at the TTL in force
+   * instead of read, at the model's rates that answered. Absent for a model the price table lacks
+   * or a loss kept before this was counted.
+   */
+  cost?: number
 }
 
 /** A prompt cache lifetime. */

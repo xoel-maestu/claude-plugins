@@ -189,3 +189,20 @@ test('the footer alert: fresh, then expiring in the last tenth of the TTL (at le
   // A clock behind the last request reads it as just made.
   expect(alertOf(cache, FIVE, -10_000)).toBe('fresh')
 })
+
+test("a loss's cost: the lost tokens written again at the TTL in force instead of read, at the answering model's rates", () => {
+  const u = (read: number, write: number, model: string) =>
+    ({ input_tokens: 5, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: 10, model })
+  // Sonnet 5.5, 5m (no subscription): 80,000 lost × (2.50 − 0.10) per MTok = $0.192.
+  let cache = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, 'auto')
+  cache = observe(cache, u(20_000, 80_000, 'claude-sonnet-5-5'), 60_000, false, 'auto')
+  expect(Math.abs(cache.losses[0]!.cost! - 80_000 * 2.4 / 1e6) < 1e-12).toBe(true)
+  // 1h set: (4 − 0.10).
+  let hour = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, '1h')
+  hour = observe(hour, u(20_000, 80_000, 'claude-sonnet-5-5'), 60_000, false, '1h')
+  expect(Math.abs(hour.losses[0]!.cost! - 80_000 * 3.9 / 1e6) < 1e-12).toBe(true)
+  // A model the table lacks: no cost.
+  let other = observe(EMPTY, u(0, 100_000, 'other'), 0, false, 'auto')
+  other = observe(other, u(0, 100_000, 'other'), 60_000, false, 'auto')
+  expect(other.losses[0]!.cost).toBeUndefined()
+})

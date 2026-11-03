@@ -321,9 +321,13 @@ function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: numb
   }
   const lost = losses.map(loss => `−${tokens(loss.lost)}`)
   const lostWidth = Math.max(...lost.map(text => text.length))
+  // What getting each back cost, in a column before the cause: written again instead of read.
+  const costs = losses.map(loss => (loss.cost === undefined ? '' : `≈ ${usdText(loss.cost)}`))
+  const costWidth = Math.max(0, ...costs.map(text => text.length))
   const lines: Draft[] = losses.map((loss, i) => [
     { text: `${clockTime(loss.at)}  `, tone: 'dim' },
     { text: `${lost[i]!.padEnd(lostWidth)}  `, tone: 'plain' },
+    ...(costWidth === 0 ? [] : [{ text: `${costs[i]!.padEnd(costWidth)}  `, tone: 'plain' as const }]),
     loss.cause === 'expired'
       ? { text: words.causes.expired(span(loss.gap)), tone: 'plain', short: words.causesShort.expired(span(loss.gap)) }
       : { text: words.causes[loss.cause], tone: 'plain', short: words.causesShort[loss.cause] },

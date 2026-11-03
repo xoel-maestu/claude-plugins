@@ -1,5 +1,7 @@
 import type { TurnUsage } from 'claude-code'
 
+import { priceOf } from './pricing'
+
 import type { ContextMeterCache, ContextMeterLoss, ContextMeterTtl } from '../types'
 
 export type Cache = ContextMeterCache
@@ -71,7 +73,11 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
     : usage.model !== previous.model ? 'model'
     : gap > ttlOf(base, setting) ? 'expired'
     : 'invalidated'
-  const loss: Loss = { at, lost: previous.prefix - read, cause, gap }
+  const lost = previous.prefix - read
+  // Getting them back: written again at the TTL in force instead of read, at the answering model's rates.
+  const rate = priceOf(usage.model, usage.input_tokens + read + usage.cache_creation_input_tokens)
+  const write = ttlOf(base, setting) >= HOUR ? rate?.write1h : rate?.write5m
+  const loss: Loss = { at, lost, cause, gap, ...(rate === null || write === undefined ? {} : { cost: (lost * (write - rate.read)) / 1e6 }) }
   return { ...next, losses: [loss, ...cache.losses].slice(0, HISTORY) }
 }
 

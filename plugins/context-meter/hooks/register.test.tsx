@@ -728,7 +728,7 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Its last request's input over Haiku 5.5's window: not the session's model (model-a here), so the
     // host reports none and the docs' 1M is marked inferred.
     'Context   30k / 1M?   3%?',
-    '━━' + '─'.repeat(65),
+    '━━' + '─'.repeat(76),
     '               Input   Cache read   Cache write   Uncached   Output',
     'Last request   30k     0            30k           2          148',
     'Session        47.6k   4.8k         42.8k         4          314',
@@ -738,7 +738,8 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Uncached, its 47,645 input tokens would cost $0.0048; with 42,795 written at 5m they cost $0.0054.
     'Cache saved    ≈ −$0.0006 (input 13% dearer than uncached)',
     `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
-    `Cache losses   ${clockTime(MIN)}  −17.6k  invalidated (prompt or tools changed)`,
+    // Getting the 17,641 lost tokens back: written again at 5m instead of read, (0.125 − 0.01) per MTok.
+    `Cache losses   ${clockTime(MIN)}  −17.6k  ≈ $0.0020  invalidated (prompt or tools changed)`,
   ])
   expect(((await run($, 'review')).text ?? '').split('\n')[0]).toBe('Main › reviewer · sonnet 5.5')
   expect((await run($, 'nobody')).text).toBe('No agent of this session matches "nobody".')
@@ -1374,6 +1375,25 @@ test('a hit 5m 30s after the previous request started, 3m 30s after it ended, sh
   await w.clock.advance(3 * MIN + 30_000)
   await respond($, w, counts(5, 50_000, 1000, 10))
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
+})
+
+test("each loss's cost in a column, aligned; a narrow band keeps the cost and shortens the cause", async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(5, 0, 100_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 20_000, 80_000, 10, 'claude-sonnet-5-5'))
+  await $.session.compact({ trigger: 'manual', messages: [summary] })
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 8000, 2000, 10, 'claude-sonnet-5-5'))
+  // 5m (no rate limits): 80,000 × 2.40 = $0.192; 92,000 × 2.40 = $0.2208.
+  expect((await cacheLines($)).slice(1)).toEqual([
+    `Cache losses   ${clockTime(2 * MIN)}  −92k  ≈ $0.2208  /compact`,
+    `               ${clockTime(MIN)}  −80k  ≈ $0.1920  invalidated (prompt or tools changed)`,
+  ])
+  const narrow = (await cardIn(await band($, 60))).rows.filter(row => row.includes('≈ $0.'))
+  expect(narrow.map(row => row.trim().replace(/ +/g, ' '))).toContain(`${clockTime(MIN)} −80k ≈ $0.1920 invalidated`)
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {
