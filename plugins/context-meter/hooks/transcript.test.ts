@@ -1,7 +1,7 @@
 // Transcript parsing, run with `claude plugin test .`: synthetic JSONL lines only.
 import { expect, test } from 'claude-code/testing'
 
-import { completeLines, lastResponse, lastTtl } from './transcript'
+import { agentTranscriptOf, completeLines, lastResponse, lastTtl } from './transcript'
 
 /** A main-thread (or, with `extra`, another) assistant entry writing `m5` and `h1` tokens to the cache. */
 const assistant = (m5: number, h1: number, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -58,4 +58,22 @@ test('the last main-thread response gives its cache counts with its TTL, so a re
   expect(lastResponse(jsonl(assistant(0, 17_000), user, assistant(0, 0)))).toEqual({ ttl: null, cacheRead: 100, cacheWrite: 0 })
   expect(lastResponse(jsonl(assistant(0, 17_000), assistant(0, 9000, { isSidechain: true })))).toEqual({ ttl: '1h', cacheRead: 100, cacheWrite: 17_000 })
   expect(lastResponse(jsonl(user))).toBeNull()
+})
+
+test("with an agent id: that agent's last response in its own transcript, other entries skipped", () => {
+  const entry = (agentId: string | undefined, ttl: '5m' | '1h', read: number) => JSON.stringify({
+    type: 'assistant', isSidechain: agentId !== undefined, ...(agentId === undefined ? {} : { agentId }),
+    message: { usage: { cache_read_input_tokens: read, cache_creation_input_tokens: 10, cache_creation: ttl === '1h' ? { ephemeral_1h_input_tokens: 10 } : { ephemeral_5m_input_tokens: 10 } } },
+  })
+  const text = [entry('a1', '5m', 1), entry('a2', '1h', 2), entry(undefined, '1h', 3)].join('\n')
+  expect(lastResponse(text, 'a1')).toEqual({ ttl: '5m', cacheRead: 1, cacheWrite: 10 })
+  expect(lastResponse(text, 'a2')).toEqual({ ttl: '1h', cacheRead: 2, cacheWrite: 10 })
+  expect(lastResponse(text)).toEqual({ ttl: '1h', cacheRead: 3, cacheWrite: 10 })
+  expect(lastResponse(text, 'a3')).toBeNull()
+})
+
+test("an agent's transcript path sits beside the session's", () => {
+  expect(agentTranscriptOf('/p/s1.jsonl', 'abc123')).toBe('/p/s1/subagents/agent-abc123.jsonl')
+  expect(agentTranscriptOf('/p/s1.jsonl', '../x')).toBeUndefined()
+  expect(agentTranscriptOf('/p/s1', 'abc')).toBeUndefined()
 })

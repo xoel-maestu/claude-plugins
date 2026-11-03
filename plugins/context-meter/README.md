@@ -31,13 +31,38 @@ The card, with the pointer on the meter:
 - **Autocompact at**: the point where auto-compaction starts. The row is left out when auto-compaction is off.
 - **Last request** and **Session**: the main thread's tokens for its last response and summed over the session. **Input** is all the input, split into **Cache read**, **Cache write** and **Uncached**; **Output** is the response. Subagents are not counted here.
 - **Cache hit**: the share of the session's input read from the prompt cache.
-- **Cost**: the session's cost with all agents, as `/cost` reports it. It is an estimate at API list prices. On a subscription the row says it is not billed on your plan.
+- **Cost**: the session's cost with all agents, as `/cost` reports it, to four decimals under a dollar as `/cost` prints it. It is an estimate at API list prices. On a subscription the row says it is not billed on your plan.
 - **Cache**: when the prompt cache expires (`active until 06:20 (in 59m, TTL 1h)`, `expired 3m ago`, `no cache yet`).
 - **Cache losses**: the last requests that did not read the previous cached prefix back, with the tokens lost and the cause: `/compact`, `model changed`, `idle <pause> > TTL`, or `invalidated (prompt or tools changed)`. The card shows the five newest; `/context-meter` shows ten. `/clear` starts the history over.
+- **Agents**: one row per subagent or teammate of the session, the most recently active first (five in the card, up to 50 in `/context-meter`), named by its name, else the task description the Agent call gave it, else its type: its requests, input (split into cache read, cache write and uncached, as in the table above), output, cache hit and the model of its last response. **All agents** sums every subagent, and **Overall** sums the main thread and the subagents together. The section shows only when a subagent has answered; the engine's own forks (memory, for example) are not in it.
+- **An agent's card**: click an agent's name in the card to see the same card for it alone: its context, last request and session, cache hit, cost, its prompt cache (TTL and expiry), its cache losses, and the agents it spawned when it spawned any. A path at the top (`Main › lead › scout`) goes back up; each step is pressable. The main thread's card is framed in the theme's accent color, a subagent's in another, a subagent's subagent in a third. While an agent's transcript is open (from the tasks list) the card shows that agent, and a click moves the view. `/context-meter 2` or `/context-meter reviewer` prints an agent's card, by its place in the list or by name.
+  - An agent's **cost** is worked out from its token counts at Anthropic's published [API list prices](https://platform.claude.com/docs/en/about-claude/pricing) (read 2026-11-03), with Haiku 5.5's higher rates for prompts over 100,000 tokens and each cache write at the agent's TTL. It is not the Batch API, fast mode or `inference_geo` rates. A model the table lacks is left out, and the amount then reads `≥`.
+  - An agent's **TTL** is read from its own transcript (`<session>/subagents/agent-<id>.jsonl`). Until it shows one, it is inferred (`?`): the TTL another agent's transcript last showed, else 5m. Subagents have been seen writing 5-minute entries on a subscription whose main thread writes 1-hour ones.
 
 Colors: below `warnAt` the bar uses the theme's accent color; from `warnAt` the bar and the percentage use the warning color, and from `dangerAt` the error color.
 
-When the footer is short the meter drops its bar (`ctx 5%`), then the `ctx` prefix (`5%`), then hides. It never wraps to a second line. When the band above the prompt is narrow, the card drops table columns (Uncached, then Cache write) and shortens its text; numbers and words are never cut.
+When the footer is short the meter drops its bar (`ctx 5%`), then the `ctx` prefix (`5%`), then hides. It never wraps to a second line. When the band above the prompt is narrow, the card drops table columns (Uncached, then Cache write; in Agents: Model, Uncached, Cache write, Output, Requests, then Cache read) and shortens its text; numbers and words are never cut. An agent's name longer than 24 characters ends in `…`.
+
+## Where each figure comes from
+
+Every figure is read from Claude Code where Claude Code reports it, so it follows any change Anthropic makes without an update of this plugin:
+
+| Figure | Source |
+| --- | --- |
+| Tokens (every count, main thread and agents) | The API's usage on each response (`turn.step`) |
+| Context and window of the main thread, autocompact point | `$.session.usage()`, the status line's figures |
+| Cost of the session | `$.session.usage().cost`, as `/cost` reports it |
+| Cache TTL (main thread and each agent) | The `cache_creation` split of the last write in the session's or the agent's own transcript |
+
+Claude Code reports neither a model's context window other than the session model's, nor the cost of a single response. Where an agent needs one of those, the plugin falls back to Anthropic's published tables, read 2026-11-03, and marks the figure as inferred:
+
+| Figure | Fallback |
+| --- | --- |
+| Window of an agent on another model than the session's | [Context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows): 1M for the models listed there, 200k for the others; shown with `?` |
+| Cost of an agent | [Pricing](https://platform.claude.com/docs/en/about-claude/pricing), applied to the agent's token counts; the row says it is worked out from them |
+| TTL of an agent whose transcript shows none yet | Another agent's, else 5m; shown with `?` |
+
+A per-agent cost taken as the change in the session's cost around each of its responses was tried and dropped: Claude Code's own requests (titles, suggestions) land between them and are invisible to plugins, so they were charged to whichever agent answered next.
 
 ## Install
 
@@ -71,7 +96,7 @@ With `cacheTtl` set to `auto`, the plugin reads the TTL of the last cache write 
 
 - The meter is drawn in the footer row (`SessionMode`). The card is drawn in the band above the prompt (`AbovePrompt`), hidden until the pointer is on the meter or on the card. Both join one hover group, so no code runs on hover.
 - The figure comes from `$.session.usage()`, read after each response and every 2 seconds, which catches resumes and rewinds.
-- Token counts come from the `turn.step` hook, main thread only (requests with no `agentId`). They are kept in plugin state, so reloading the plugin keeps them, and `/clear` resets them. A compaction's own summarizer request is not a `turn.step`, so it is never counted as the session's work.
+- Token counts come from the `turn.step` hook: requests with no `agentId` are the main thread's; one whose `agentId` `$.agent.list()` names is a subagent's; any other is the engine's own and is not counted. Up to 50 agents keep a row; an older one stays in the totals. They are kept in plugin state, so reloading the plugin keeps them, and `/clear` resets them. A compaction's own summarizer request is not a `turn.step`, so it is never counted as the session's work.
 - Input is uncached input plus cache read plus cache write, and the hit rate is cache read over that input: the total input of Anthropic's [prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - The cache is timed from the start of each main-thread request, as those docs time it: an entry lives for its TTL from the start of the request that wrote or read it, and each read starts it over. The idle time behind an `idle` loss is counted between request starts.
 - A request is a cache loss when the previous request's cached prefix (cache read plus cache write) is over 1024 tokens and this request reads back more than 1024 tokens less than it. The 1024 is a noise floor chosen by this plugin, not an API rule: the smallest cacheable prompt is 512 to 4,096 tokens depending on the model.
