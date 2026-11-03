@@ -58,10 +58,14 @@ export function priceOf (model: string, promptTokens: number): Rates | null {
   return 'short' in entry ? (promptTokens > LONG_PROMPT ? entry.long : entry.short) : entry
 }
 
-/** A cost in US dollars in parts: what does not depend on the TTL, and the cache writes at each TTL. */
-export type CostParts = { base: number; write5m: number; write1h: number }
+/**
+ * A cost in US dollars in parts: what does not depend on the TTL, and the cache writes at each
+ * TTL; and, for what the cache saved, the output's part of `base` and what all the input would have
+ * cost uncached (`plain`). The last two are absent in parts kept before they were counted.
+ */
+export type CostParts = { base: number; write5m: number; write1h: number; output?: number; plain?: number }
 
-export const NO_COST: CostParts = { base: 0, write5m: 0, write1h: 0 }
+export const NO_COST: CostParts = { base: 0, write5m: 0, write1h: 0, output: 0, plain: 0 }
 
 /**
  * One request's cost at list prices, in parts (its writes priced at both TTLs, for the one its
@@ -76,11 +80,29 @@ export function requestCost (usage: TurnUsage): CostParts | null {
     base: (usage.input_tokens * rate.input + usage.cache_read_input_tokens * rate.read + usage.output_tokens * rate.output) / 1e6,
     write5m: (usage.cache_creation_input_tokens * rate.write5m) / 1e6,
     write1h: (usage.cache_creation_input_tokens * rate.write1h) / 1e6,
+    output: (usage.output_tokens * rate.output) / 1e6,
+    plain: (prompt * rate.input) / 1e6,
   }
 }
 
-export const plusCost = (a: CostParts, b: CostParts): CostParts =>
-  ({ base: a.base + b.base, write5m: a.write5m + b.write5m, write1h: a.write1h + b.write1h })
+export const plusCost = (a: CostParts, b: CostParts): CostParts => ({
+  base: a.base + b.base,
+  write5m: a.write5m + b.write5m,
+  write1h: a.write1h + b.write1h,
+  // A part kept before these were counted makes the sum's unknown too.
+  ...(a.output === undefined || b.output === undefined ? {} : { output: a.output + b.output }),
+  ...(a.plain === undefined || b.plain === undefined ? {} : { plain: a.plain + b.plain }),
+})
+
+/**
+ * What the cache saved on input at `ttl`: what all the input would have cost uncached, less what it
+ * cost (cache reads, cache writes at `ttl`, uncached); negative when the writes cost more than the
+ * reads saved. Null for parts kept before this was counted.
+ */
+export function savedAt (parts: CostParts, ttl: ContextMeterTtl): { saved: number; plain: number } | null {
+  if (parts.plain === undefined || parts.output === undefined) return null
+  return { saved: parts.plain - (costAt(parts, ttl) - parts.output), plain: parts.plain }
+}
 
 /** The cost with the writes at `ttl`. */
 export const costAt = (parts: CostParts, ttl: ContextMeterTtl): number => parts.base + (ttl === '1h' ? parts.write1h : parts.write5m)

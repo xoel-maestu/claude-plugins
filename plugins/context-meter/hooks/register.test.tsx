@@ -728,15 +728,18 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Its last request's input over Haiku 5.5's window: not the session's model (model-a here), so the
     // host reports none and the docs' 1M is marked inferred.
     'Context   30k / 1M?   3%?',
-    '━━' + '─'.repeat(65),
+    '━━' + '─'.repeat(76),
     '               Input   Cache read   Cache write   Uncached   Output',
     'Last request   30k     0            30k           2          148',
     'Session        47.6k   4.8k         42.8k         4          314',
     'Cache hit      10% of input read from cache · last request 0% ↓27',
     // Haiku 5.5 up to 100k: (4 × 0.10 + 4,846 × 0.01 + 314 × 0.50 + 42,795 × 0.125) / 1e6 = $0.00556.
     'Cost           ≈ $0.0056 at API list prices, from its token counts',
+    // Uncached, its 47,645 input tokens would cost $0.0048; with 42,795 written at 5m they cost $0.0054.
+    'Cache saved    ≈ −$0.0006 (13% more than without the cache)',
     `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
-    `Cache losses   ${clockTime(MIN)}  −17.6k  invalidated (prompt or tools changed)`,
+    // Getting the 17,641 lost tokens back: written again at 5m instead of read, (0.125 − 0.01) per MTok.
+    `Cache losses   ${clockTime(MIN)}  −17.6k  ≈ $0.0020  invalidated (prompt or tools changed)`,
   ])
   expect(((await run($, 'review')).text ?? '').split('\n')[0]).toBe('Main › reviewer · sonnet 5.5')
   expect((await run($, 'nobody')).text).toBe('No agent of this session matches "nobody".')
@@ -965,6 +968,75 @@ test("ids of one model are one row; an agent's card sums the models under it; th
   expect(await header(115)).toBe('Models Requests Input Cache read Cache write Uncached Output Cache hit Cost')
   expect(await header(60)).toBe('Models Input Cache read Cache hit Cost')
   expect(await header(20)).toBeUndefined()
+})
+
+test("what the cache saved over the session on the main card: main and agents, each thread's writes at its TTL; Spanish; gone where narrow", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  w.live.rateLimits = [{ window: 'five_hour' }] as never
+  await startSession($)
+  await measure($, 62)
+  // Sonnet 5.5 on the main thread (1h inferred on a subscription), Haiku 5.5 in a1 (5m inferred).
+  await respond($, w, counts(10, 0, 100_000, 100, 'claude-sonnet-5-5'))
+  await respond($, w, counts(10, 100_000, 1000, 100, 'claude-sonnet-5-5'))
+  await respond($, w, counts(2, 0, 20_000, 10, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(2, 20_000, 500, 10, 'claude-haiku-5-5'), 'a1')
+  // Uncached: 201,020 × 2 + 40,504 × 0.10 = 406,090.4 µ$. Cost: main 20 × 2 + 100,000 × 0.10 + 101,000 × 4
+  // = 414,040, a1 2,762.9: 416,802.9 µ$. Saved: −10,712.5 µ$, 3% more.
+  const row = async (args = '') => ((await run($, args)).text ?? '').split('\n').find(line => line.startsWith('Cache saved'))
+  expect(await row()).toBe('Cache saved    ≈ −$0.0107 (3% more than without the cache)')
+  // a1 alone: uncached 40,504 × 0.10 = 4,050.4 µ$, cost 0.4 + 200 + 2,562.5 = 2,762.9 µ$: saved 1,287.5 µ$, 32%.
+  expect(await row('1')).toBe('Cache saved    ≈ $0.0013 (32% less than without the cache)')
+  const narrow = (await cardIn(await band($, 55))).rows.find(line => line.includes('Cache saved'))
+  expect(narrow?.trim()).toBe('Cache saved    ≈ −$0.0107')
+})
+
+test("two agents on different TTLs: each one's writes at its own on the main card", async ($, on) => {
+  // Each agent's transcript: a1 wrote at 5m, a2 at 1h.
+  const entry = (id: string, key: string) => JSON.stringify({ type: 'assistant', isSidechain: true, agentId: id, message: { usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 50_000, cache_creation: { [key]: 50_000 } } } }) + '\n'
+  const files: Record<string, string> = {
+    '/synthetic/session/subagents/agent-a1.jsonl': entry('a1', 'ephemeral_5m_input_tokens'),
+    '/synthetic/session/subagents/agent-a2.jsonl': entry('a2', 'ephemeral_1h_input_tokens'),
+  }
+  on('fs.stat', ($, e) => ({ value: { kind: files[e.path] === undefined ? 'other' : 'file', size: files[e.path]?.length ?? 0, mtimeMs: 0, isLink: false } }) as never)
+  on('fs.read', ($, e) => ({ value: files[e.path] ?? '' }) as never)
+  on('process.run', ($, e) => ({ value: { exitCode: 0, stdout: files[e.argv.at(-1)!] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) as never)
+  on('classic.SubagentStop', () => ({}))
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await respond($, w, counts(10, 0, 0, 100, 'claude-sonnet-5-5'))
+  await respond($, w, counts(2, 0, 50_000, 10, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(2, 0, 50_000, 10, 'claude-haiku-5-5'), 'a2')
+  for (const id of ['a1', 'a2']) {
+    await $.classic.SubagentStop({ stop_hook_active: false, agent_id: id, agent_type: 'Explore', agent_transcript_path: `/synthetic/session/subagents/agent-${id}.jsonl` } as never)
+  }
+  // Uncached: 10 × 2 + 100,004 × 0.10 = 10,020.4 µ$. Cost: 20 + a1 (0.2 + 50,000 × 0.125) + a2 (0.2 + 50,000 × 0.20) = 16,270.4 µ$.
+  const row = ((await run($, '')).text ?? '').split('\n').find(text => text.startsWith('Cache saved'))
+  expect(row).toBe('Cache saved    ≈ −$0.0063 (62% more than without the cache)')
+})
+
+test("Haiku 5.5's long-prompt rates price what the cache saved too", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await respond($, w, counts(10, 0, 0, 100, 'claude-sonnet-5-5'))
+  // 150,002 input tokens: over 100,000, so 0.50 input, 0.05 read.
+  await respond($, w, counts(2, 150_000, 0, 10, 'claude-haiku-5-5'), 'a1')
+  const row = ((await run($, '1')).text ?? '').split('\n').find(text => text.startsWith('Cache saved'))
+  // Uncached 150,002 × 0.50 = 75,001 µ$; cost 2 × 0.50 + 150,000 × 0.05 = 7,501 µ$: saved 67,500 µ$, 90%.
+  expect(row).toBe('Cache saved    ≈ $0.0675 (90% less than without the cache)')
+})
+
+test('the cache saved in Spanish; none with a model off the price table', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(10, 0, 100_000, 100, 'claude-sonnet-5-5'))
+  await respond($, w, counts(10, 100_000, 0, 100, 'claude-sonnet-5-5'))
+  const rows = ((await run($, '')).text ?? '').split('\n')
+  expect(rows.find(line => line.startsWith('Ahorro'))).toMatch(/^Ahorro de caché +≈ \$0\.\d{4} \(un \d+% menos que sin caché\)$/)
+  await respond($, w, counts(1, 1, 1, 1))
+  expect(((await run($, '')).text ?? '').split('\n').some(line => line.startsWith('Ahorro'))).toBe(false)
 })
 
 test('no subagent: no Agents section', async ($, on) => {
@@ -1303,6 +1375,44 @@ test('a hit 5m 30s after the previous request started, 3m 30s after it ended, sh
   await w.clock.advance(3 * MIN + 30_000)
   await respond($, w, counts(5, 50_000, 1000, 10))
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
+})
+
+test("each loss's cost in a column, aligned; a narrow band keeps the cost and shortens the cause", async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(5, 0, 100_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 20_000, 80_000, 10, 'claude-sonnet-5-5'))
+  await $.session.compact({ trigger: 'manual', messages: [summary] })
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 8000, 2000, 10, 'claude-sonnet-5-5'))
+  // 5m (no rate limits): 80,000 rewritten × 2.40 = $0.192; the compaction lost 92,000 but wrote 2,000: × 2.40 = $0.0048.
+  expect((await cacheLines($)).slice(1)).toEqual([
+    `Cache losses   ${clockTime(2 * MIN)}  −92k  ≈ $0.0048  /compact`,
+    `               ${clockTime(MIN)}  −80k  ≈ $0.1920  invalidated (prompt or tools changed)`,
+  ])
+  const narrow = (await cardIn(await band($, 60))).rows.filter(row => row.includes('≈ $0.'))
+  expect(narrow.map(row => row.trim().replace(/ +/g, ' '))).toContain(`${clockTime(MIN)} −80k ≈ $0.1920 invalidated`)
+})
+
+test('a loss with no cost (a model off the price table) leaves its cell blank, the causes aligned; the cost follows the TTL the transcript shows later', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  await respond($, w, counts(5, 0, 100_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 20_000, 80_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 100_000, 10, 'other-model'))
+  expect((await cacheLines($)).slice(1)).toEqual([
+    `Cache losses   ${clockTime(2 * MIN)}  −100k             model changed`,
+    `               ${clockTime(MIN)}  −80k   ≈ $0.1920  invalidated (prompt or tools changed)`,
+  ])
+  // The transcript then shows the writes were 1h: the loss is priced at it, 80,000 × 3.90.
+  file.lines.push(entry(0, 100_000))
+  await stop($)
+  expect((await cacheLines($))[2]).toBe(`               ${clockTime(MIN)}  −80k   ≈ $0.3120  invalidated (prompt or tools changed)`)
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {

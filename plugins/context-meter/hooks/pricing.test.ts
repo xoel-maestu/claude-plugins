@@ -4,7 +4,7 @@ import { expect, test } from 'claude-code/testing'
 /** Equal to within a millionth of a cent: float sums of prices. */
 const near = (actual: number, expected: number) => expect(Math.abs(actual - expected) < 1e-8).toBe(true)
 
-import { NO_COST, costAt, plusCost, priceOf, requestCost, windowOf } from './pricing'
+import { NO_COST, costAt, plusCost, priceOf, requestCost, savedAt, windowOf } from './pricing'
 
 const usage = (input: number, cacheRead: number, cacheWrite: number, output: number, model: string) =>
   ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, model })
@@ -35,8 +35,21 @@ test('a request: uncached, read, written at its TTL and output, each at its rate
   expect(requestCost(usage(1, 1, 1, 1, 'some-other-model'))).toBeNull()
 })
 
-test('parts add up', () => {
+test('parts add up; one kept before output and plain were counted leaves them unknown', () => {
+  expect(plusCost(NO_COST, { base: 1, write5m: 2, write1h: 3, output: 4, plain: 5 })).toEqual({ base: 1, write5m: 2, write1h: 3, output: 4, plain: 5 })
   expect(plusCost(NO_COST, { base: 1, write5m: 2, write1h: 3 })).toEqual({ base: 1, write5m: 2, write1h: 3 })
+})
+
+test('what the cache saved: all the input at the base rate, less what it cost; negative when writes outweigh reads', () => {
+  // Sonnet 5.5, 1M read, 100k written, 10 uncached: uncached input would be 1,100,010 × $2.
+  const parts = requestCost(usage(10, 1e6, 100_000, 500, 'claude-sonnet-5-5'))!
+  const s5 = savedAt(parts, '5m')!
+  near(s5.plain, 1_100_010 * 2 / 1e6)
+  near(s5.saved, (1_100_010 * 2 - (10 * 2 + 1e6 * 0.1 + 100_000 * 2.5)) / 1e6)
+  const write = savedAt(requestCost(usage(10, 0, 100_000, 500, 'claude-sonnet-5-5'))!, '1h')!
+  near(write.saved, (100_010 * 2 - (10 * 2 + 100_000 * 4)) / 1e6)
+  expect(write.saved < 0).toBe(true)
+  expect(savedAt({ base: 1, write5m: 0, write1h: 0 }, '5m')).toBeNull()
 })
 
 test('the context window by model: 1M for the models the docs list, 200k for the others', () => {

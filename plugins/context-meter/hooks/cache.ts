@@ -1,5 +1,7 @@
 import type { TurnUsage } from 'claude-code'
 
+import { priceOf } from './pricing'
+
 import type { ContextMeterCache, ContextMeterLoss, ContextMeterTtl } from '../types'
 
 export type Cache = ContextMeterCache
@@ -71,7 +73,16 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
     : usage.model !== previous.model ? 'model'
     : gap > ttlOf(base, setting) ? 'expired'
     : 'invalidated'
-  const loss: Loss = { at, lost: previous.prefix - read, cause, gap }
+  const lost = previous.prefix - read
+  // Getting them back: the lost tokens this request wrote again (a compaction or a shorter prompt
+  // writes fewer than it lost) cost the write rate instead of the read rate, at the answering
+  // model's rates. Kept at both TTLs: the card prices them at the one in force, as it does all writes.
+  const rate = priceOf(usage.model, usage.input_tokens + read + usage.cache_creation_input_tokens)
+  const rewritten = Math.min(lost, usage.cache_creation_input_tokens)
+  const loss: Loss = {
+    at, lost, cause, gap,
+    ...(rate === null ? {} : { cost: { write5m: (rewritten * (rate.write5m - rate.read)) / 1e6, write1h: (rewritten * (rate.write1h - rate.read)) / 1e6 } }),
+  }
   return { ...next, losses: [loss, ...cache.losses].slice(0, HISTORY) }
 }
 

@@ -60,7 +60,7 @@ export type ContextMeterAgents = {
     /** The request before the last, and its model, for the hit rate's trend. */
     previous?: ContextMeterCounts & { model: string }
     cache: ContextMeterCache
-    cost: { base: number; write5m: number; write1h: number }
+    cost: { base: number; write5m: number; write1h: number; output?: number; plain?: number }
     isUnpriced: boolean
     /** Its counts and requests by the model that answered. */
     models?: Record<string, ContextMeterModel>
@@ -76,7 +76,7 @@ export type ContextMeterAgents = {
 /** One model's counts and requests, and their cost at list prices in parts (`isUnpriced`: a request was of a model the price table lacks). */
 export type ContextMeterModel = ContextMeterCounts & {
   requests: number
-  cost?: { base: number; write5m: number; write1h: number }
+  cost?: { base: number; write5m: number; write1h: number; output?: number; plain?: number }
   isUnpriced?: boolean
 }
 
@@ -86,6 +86,12 @@ export type ContextMeterLoss = {
   lost: number
   cause: 'compact' | 'model' | 'expired' | 'invalidated'
   gap: number
+  /**
+   * What getting the lost tokens back cost, at list prices, at each TTL: the lost tokens the request
+   * wrote again, at the write rate instead of the read rate, at the answering model's rates. Absent
+   * for a model the price table lacks or a loss kept before this was counted.
+   */
+  cost?: { write5m: number; write1h: number }
 }
 
 /** A prompt cache lifetime. */
