@@ -357,7 +357,7 @@ async function viewOf ($: EngineInterface, now?: number, agentId?: string): Prom
   const isHostWindow = isCard && shown !== null && picked.model === counted.last?.model
   const window = !isCard ? null : isHostWindow ? shown!.window : windowOf(picked.model)
   const selected = !isCard ? undefined : { path, window, isWindowInferred: !isHostWindow, ...agentTtlOf(picked.cache) }
-  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others, selected }
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others, selected, ttlSetting }
 }
 
 /** What `/context-meter <agent>` says when no agent of the session matches. */

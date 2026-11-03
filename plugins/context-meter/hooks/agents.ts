@@ -80,7 +80,7 @@ export function add (
     cache: observe(cacheBefore, usage, at, isSubscription, setting),
     cost: price === null ? (before?.cost ?? NO_COST) : plusCost(before?.cost ?? NO_COST, price),
     isUnpriced: (before?.isUnpriced ?? false) || price === null,
-    models: addModel(before?.models ?? {}, usage.model, counts),
+    models: addModel(before?.models ?? {}, usage),
   }
   return {
     ...state,
@@ -88,7 +88,7 @@ export function add (
     total: plus(state.total, counts),
     requests: state.requests + 1,
     count: state.count + (before === undefined ? 1 : 0),
-    models: addModel(state.models ?? {}, usage.model, counts),
+    models: addModel(state.models ?? {}, usage),
   }
 }
 

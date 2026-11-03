@@ -13,7 +13,7 @@ const explore = { id: 'a1', type: 'Explore' }
 
 test('no agent yet: no rows, zero totals', () => {
   expect(EMPTY).toEqual({ agents: [], total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 0, count: 0 })
-  expect(add(EMPTY, explore, usage(1, 2, 3, 4), 0).models).toEqual({ 'claude-haiku-5-5': { input: 1, cacheRead: 2, cacheWrite: 3, output: 4, requests: 1 } })
+  expect(add(EMPTY, explore, usage(1, 2, 3, 4), 0).models).toMatchObject({ 'claude-haiku-5-5': { input: 1, cacheRead: 2, cacheWrite: 3, output: 4, requests: 1 } })
 })
 
 test("each agent's requests add up in its own row and in the total", () => {

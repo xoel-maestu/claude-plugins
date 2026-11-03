@@ -1,6 +1,7 @@
 import type { TurnUsage } from 'claude-code'
 
 import type { ContextMeterCounts, ContextMeterLedger } from '../types'
+import { NO_COST, plusCost, requestCost } from './pricing'
 
 export type Counts = ContextMeterCounts
 export type Ledger = ContextMeterLedger
@@ -28,21 +29,29 @@ export function add (state: Ledger, usage: TurnUsage, at: number): Ledger {
       cacheWrite: total.cacheWrite + counts.cacheWrite,
     },
     requests: state.requests + 1,
-    models: addModel(state.models ?? {}, usage.model, counts),
+    models: addModel(state.models ?? {}, usage),
   }
 }
 
-/** The counts by model: `counts` added to `model`'s row, a request more. */
-export function addModel (models: Models, model: string, counts: Counts): Models {
+/**
+ * The counts by model: the response's counts added to its model's row, a request more, and its
+ * cost at list prices in parts (the writes at both TTLs); `isUnpriced` once a request of a model
+ * the price table lacks was left out of the cost.
+ */
+export function addModel (models: Models, usage: TurnUsage): Models {
+  const model = usage.model
   const row = models[model] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 }
+  const price = requestCost(usage)
   return {
     ...models,
     [model]: {
-      input: row.input + counts.input,
-      output: row.output + counts.output,
-      cacheRead: row.cacheRead + counts.cacheRead,
-      cacheWrite: row.cacheWrite + counts.cacheWrite,
+      input: row.input + usage.input_tokens,
+      output: row.output + usage.output_tokens,
+      cacheRead: row.cacheRead + usage.cache_read_input_tokens,
+      cacheWrite: row.cacheWrite + usage.cache_creation_input_tokens,
       requests: row.requests + 1,
+      cost: price === null ? row.cost ?? NO_COST : plusCost(row.cost ?? NO_COST, price),
+      ...(price === null || row.isUnpriced === true ? { isUnpriced: true } : {}),
     },
   }
 }
@@ -58,6 +67,8 @@ export function plusModels (a: Models, b: Models): Models {
       cacheRead: before.cacheRead + row.cacheRead,
       cacheWrite: before.cacheWrite + row.cacheWrite,
       requests: before.requests + row.requests,
+      cost: plusCost(before.cost ?? NO_COST, row.cost ?? NO_COST),
+      ...(before.isUnpriced === true || row.isUnpriced === true ? { isUnpriced: true } : {}),
     }
   }
   return out

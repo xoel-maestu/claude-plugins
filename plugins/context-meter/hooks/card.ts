@@ -1,4 +1,4 @@
-import type { ContextMeterFill } from '../types'
+import type { ContextMeterFill, ContextMeterTtl as Ttl } from '../types'
 
 import { KEPT, childrenOf, descendantsOf, modelName, sumOf, totalOf } from './agents'
 import type { Agent, Agents } from './agents'
@@ -34,7 +34,7 @@ const LAYOUTS: Column[][] = [
 ]
 
 /** The subagents table's columns: the token table's, then Cache hit (the share of input read from cache) and Model. */
-type AgentColumn = 'requests' | Column | 'hit' | 'model'
+type AgentColumn = 'requests' | Column | 'hit' | 'model' | 'cost'
 /** Widest first, dropping as the token table does: Model, Uncached, Cache write, Output, Requests, Cache read. */
 const AGENT_LAYOUTS: AgentColumn[][] = [
   ['requests', 'input', 'cacheRead', 'cacheWrite', 'uncached', 'output', 'hit', 'model'],
@@ -72,7 +72,8 @@ type Words = {
   agents: (count: number) => string
   agentColumns: Record<AgentColumn, string>
   allAgents: string
-  overall: string
+  /** The loop and every agent under it: the main thread's card, an agent's. */
+  overall: { main: string; agent: string }
   models: string
   mainCrumb: string
 }
@@ -104,9 +105,9 @@ const WORDS: Record<Language, Words> = {
     activeShort: (until, ttl) => `until ${until} (TTL ${ttl})`,
     causesShort: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap}`, invalidated: 'invalidated' },
     agents: count => `Agents (${count})`,
-    agentColumns: { requests: 'Requests', input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output', hit: 'Cache hit', model: 'Model' },
-    allAgents: 'All agents',
-    overall: 'Overall',
+    agentColumns: { requests: 'Requests', input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output', hit: 'Cache hit', model: 'Model', cost: 'Cost' },
+    allAgents: 'Subagents total',
+    overall: { main: 'Main + subagents', agent: 'This agent + subagents' },
     models: 'Models',
     mainCrumb: 'Main',
   },
@@ -136,9 +137,9 @@ const WORDS: Record<Language, Words> = {
     activeShort: (until, ttl) => `hasta las ${until} (TTL ${ttl})`,
     causesShort: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap}`, invalidated: 'invalidada' },
     agents: count => `Agentes (${count})`,
-    agentColumns: { requests: 'Peticiones', input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida', hit: 'Acierto', model: 'Modelo' },
-    allAgents: 'Todos los agentes',
-    overall: 'En conjunto',
+    agentColumns: { requests: 'Peticiones', input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida', hit: 'Acierto', model: 'Modelo', cost: 'Coste' },
+    allAgents: 'Total subagentes',
+    overall: { main: 'Principal + subagentes', agent: 'Este agente + subagentes' },
     models: 'Modelos',
     mainCrumb: 'Principal',
   },
@@ -210,6 +211,8 @@ export type CardView = {
   isTtlInferred?: boolean
   now?: number
   agents?: Agents
+  /** The `cacheTtl` setting: an explicit TTL prices every write. */
+  ttlSetting?: 'auto' | Ttl
   /**
    * The agent the card shows instead of the main thread: the agents from the main thread's child
    * down to it (it last), its cache's TTL in force and its model's context window.
@@ -339,6 +342,8 @@ type Section = {
   /** The loop's own counts and requests: with `total`, Overall. */
   self: Counts
   selfRequests: number
+  /** The main thread's section, not an agent's. */
+  isMain: boolean
 }
 
 type Line = { label: string; press?: string; values: Partial<Record<AgentColumn, string>> }
@@ -392,25 +397,49 @@ function agentRows (section: Section, words: Words, room: number, labelWidth: nu
   const lines: Line[] = [
     ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), press: `agent:${agent.id}`, values: valuesOf(agent, agent.requests, agent.model) })),
     { label: words.allAgents, values: valuesOf(section.total, section.requests) },
-    { label: words.overall, values: valuesOf(plusCounts(section.total, section.self), section.requests + section.selfRequests) },
+    { label: section.isMain ? words.overall.main : words.overall.agent, values: valuesOf(plusCounts(section.total, section.self), section.requests + section.selfRequests) },
   ]
   return tableSection(words.agents(section.count), lines, words, room, labelWidth, AGENT_LAYOUTS)
 }
 
-/** The models table's layouts: the agents table's, without its Model column (the row is the model). */
-const MODEL_LAYOUTS = AGENT_LAYOUTS.map(columns => columns.filter(column => column !== 'model'))
+/** The models table's layouts, widest first: the row is the model; Cost stays to the last but one. */
+const MODEL_LAYOUTS: AgentColumn[][] = [
+  ['requests', 'input', 'cacheRead', 'cacheWrite', 'uncached', 'output', 'hit', 'cost'],
+  ['requests', 'input', 'cacheRead', 'cacheWrite', 'output', 'hit', 'cost'],
+  ['requests', 'input', 'cacheRead', 'output', 'hit', 'cost'],
+  ['requests', 'input', 'cacheRead', 'hit', 'cost'],
+  ['input', 'cacheRead', 'hit', 'cost'],
+  ['input', 'hit', 'cost'],
+  ['input', 'hit'],
+]
+
+/** Tallies by model and the TTL their cache writes are priced at. */
+type ModelSource = { models: Models; ttl: Ttl }
 
 /**
  * A loop's models section: a row per model that answered in it or under it, the most requests
- * first, with the same columns as the agents table. Only where more than one model answered.
+ * first, with the same columns as the agents table and the cost at list prices (each source's
+ * writes at its TTL; `≥` when a request's model is not in the price table). Only where more than
+ * one model answered.
  */
-function modelRows (models: Models, words: Words, room: number, labelWidth: number): Row[] {
+function modelRows (sources: ModelSource[], words: Words, room: number, labelWidth: number): Row[] {
   // Ids of one model (with and without a date) are one row, under the name the card shows.
   const byName: Models = {}
-  for (const [model, row] of Object.entries(models)) Object.assign(byName, plusModels(byName, { [modelName(model)]: row }))
+  const dollars = new Map<string, number>()
+  for (const { models, ttl } of sources) {
+    for (const [model, row] of Object.entries(models)) {
+      const name = modelName(model)
+      Object.assign(byName, plusModels(byName, { [name]: row }))
+      dollars.set(name, (dollars.get(name) ?? 0) + costAt(row.cost ?? { base: 0, write5m: 0, write1h: 0 }, ttl))
+    }
+  }
   const entries = Object.entries(byName).sort(([a, x], [b, y]) => y.requests - x.requests || a.localeCompare(b))
   if (entries.length < 2) return []
-  const lines = entries.map(([name, row]): Line => ({ label: name, values: valuesOf(row, row.requests) }))
+  const lines = entries.map(([name, row]): Line => ({
+    label: name,
+    // A model the price table lacks: no cost of its own (`–`), else `≥` what the priced requests cost.
+    values: { ...valuesOf(row, row.requests), cost: (dollars.get(name) ?? 0) === 0 && row.isUnpriced === true ? '–' : `${row.isUnpriced === true ? '≥' : ''}${usdText(dollars.get(name) ?? 0)}` },
+  }))
   return tableSection(words.models, lines, words, room, labelWidth, MODEL_LAYOUTS)
 }
 
@@ -419,6 +448,7 @@ function modelRows (models: Models, words: Words, room: number, labelWidth: numb
  * under a hundredth of a cent from the first significant digit (`$0.00004`).
  */
 export function usdText (usd: number): string {
+  if (!(usd > 0)) return '$0'
   // Rounded first, so an amount that rounds up (0.99999) reads in the wider form.
   if (Number(usd.toFixed(2)) >= 1) return `$${usd.toFixed(2)}`
   if (Number(usd.toFixed(4)) >= 0.0001) return `$${usd.toFixed(4)}`
@@ -495,17 +525,26 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     requests: agent === undefined ? agents.requests : below.reduce((sum, row) => sum + row.requests, 0),
     self: ledger?.total ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     selfRequests: ledger?.requests ?? 0,
+    isMain: agent === undefined,
   }
   const agentSection = section === undefined ? [] : agentRows(section, words, room, labelWidth, maxAgents)
   // Every model that answered in this loop or under it: the main thread's agents' from their
   // session-wide tally (past the kept rows), an agent's from the rows under it.
-  const own = (agent === undefined ? view.ledger?.models : agent.models) ?? {}
-  const under = agent === undefined ? agents?.models ?? {} : below.reduce((sum, row) => plusModels(sum, row.models ?? {}), {} as Models)
-  const models = plusModels(own, under)
+  // Each source's writes are priced at its own TTL: the loop's, each agent's under it (the main
+  // thread's agents past the kept rows at the TTL agents were last seen writing).
+  const ttlKey = (ms: number): Ttl => (ms >= HOUR ? '1h' : '5m')
+  const agentTtl = (row: Agent): Ttl => view.ttlSetting !== undefined && view.ttlSetting !== 'auto' ? view.ttlSetting
+    : row.cache?.observedTtl ?? row.cache?.storedTtl ?? '5m'
+  const sources: ModelSource[] = [
+    { models: (agent === undefined ? view.ledger?.models : agent.models) ?? {}, ttl: ttlKey(ttl) },
+    ...(agent === undefined
+      ? [{ models: agents?.models ?? {}, ttl: view.ttlSetting !== undefined && view.ttlSetting !== 'auto' ? view.ttlSetting : agents?.lastTtl ?? '5m' }]
+      : below.map(row => ({ models: row.models ?? {}, ttl: agentTtl(row) }))),
+  ]
   // Counts kept from before models were tallied leave the rows short of the loop's requests: then none.
   const loopRequests = (ledger?.requests ?? 0) + (agent === undefined ? agents?.requests ?? 0 : below.reduce((sum, row) => sum + row.requests, 0))
-  const isWhole = Object.values(models).reduce((sum, row) => sum + row.requests, 0) === loopRequests
-  const modelSection = isWhole ? modelRows(models, words, room, labelWidth) : []
+  const tallied = sources.reduce((sum, source) => sum + Object.values(source.models).reduce((n, row) => n + row.requests, 0), 0)
+  const modelSection = tallied === loopRequests ? modelRows(sources, words, room, labelWidth) : []
   const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
