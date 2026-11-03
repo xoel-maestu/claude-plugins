@@ -4,6 +4,7 @@ import type { ContextMeterCounts, ContextMeterLedger } from '../types'
 
 export type Counts = ContextMeterCounts
 export type Ledger = ContextMeterLedger
+export type Models = NonNullable<ContextMeterLedger['models']>
 
 /** No request yet: no last one, every total zero. */
 export const EMPTY: Ledger = { total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 0 }
@@ -27,7 +28,39 @@ export function add (state: Ledger, usage: TurnUsage, at: number): Ledger {
       cacheWrite: total.cacheWrite + counts.cacheWrite,
     },
     requests: state.requests + 1,
+    models: addModel(state.models ?? {}, usage.model, counts),
   }
+}
+
+/** The counts by model: `counts` added to `model`'s row, a request more. */
+export function addModel (models: Models, model: string, counts: Counts): Models {
+  const row = models[model] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 }
+  return {
+    ...models,
+    [model]: {
+      input: row.input + counts.input,
+      output: row.output + counts.output,
+      cacheRead: row.cacheRead + counts.cacheRead,
+      cacheWrite: row.cacheWrite + counts.cacheWrite,
+      requests: row.requests + 1,
+    },
+  }
+}
+
+/** Two sets of rows by model, summed. */
+export function plusModels (a: Models, b: Models): Models {
+  const out: Models = { ...a }
+  for (const [model, row] of Object.entries(b)) {
+    const before = out[model]
+    out[model] = before === undefined ? row : {
+      input: before.input + row.input,
+      output: before.output + row.output,
+      cacheRead: before.cacheRead + row.cacheRead,
+      cacheWrite: before.cacheWrite + row.cacheWrite,
+      requests: before.requests + row.requests,
+    }
+  }
+  return out
 }
 
 /** The share of the input the cache served: read over read, written and uncached; null when nothing was sent. */

@@ -31,6 +31,8 @@ export type ContextMeterLedger = {
   last?: ContextMeterCounts & { model: string; at: number }
   total: ContextMeterCounts
   requests: number
+  /** The counts and requests by the model that answered; absent in a ledger written before it was kept. */
+  models?: Record<string, ContextMeterCounts & { requests: number }>
 }
 
 /**
@@ -56,10 +58,14 @@ export type ContextMeterAgents = {
     cache: ContextMeterCache
     cost: { base: number; write5m: number; write1h: number }
     isUnpriced: boolean
+    /** Its counts and requests by the model that answered. */
+    models?: Record<string, ContextMeterCounts & { requests: number }>
   })[]
   total: ContextMeterCounts
   requests: number
   count: number
+  /** Every agent's counts and requests by the model that answered, past the kept rows too. */
+  models?: Record<string, ContextMeterCounts & { requests: number }>
   lastTtl?: ContextMeterTtl
 }
 

@@ -13,13 +13,14 @@ const explore = { id: 'a1', type: 'Explore' }
 
 test('no agent yet: no rows, zero totals', () => {
   expect(EMPTY).toEqual({ agents: [], total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 0, count: 0 })
+  expect(add(EMPTY, explore, usage(1, 2, 3, 4), 0).models).toEqual({ 'claude-haiku-5-5': { input: 1, cacheRead: 2, cacheWrite: 3, output: 4, requests: 1 } })
 })
 
 test("each agent's requests add up in its own row and in the total", () => {
   let state = add(EMPTY, explore, usage(2, 4846, 12_795, 166), 1000)
   state = add(state, explore, usage(2, 17_641, 1335, 148), 2000)
   state = add(state, { id: 'a2', type: 'general-purpose', name: 'reviewer' }, usage(10, 0, 9000, 50, 'claude-sonnet-5-5'), 3000)
-  expect(state.agents.map(({ cache, cost, ...rest }) => rest)).toEqual([
+  expect(state.agents.map(({ cache, cost, models, ...rest }) => rest)).toEqual([
     { id: 'a2', label: 'reviewer', model: 'claude-sonnet-5-5', input: 10, output: 50, cacheRead: 0, cacheWrite: 9000, requests: 1, at: 3000,
       last: { input: 10, output: 50, cacheRead: 0, cacheWrite: 9000 }, isUnpriced: false },
     { id: 'a1', label: 'Explore', model: 'claude-haiku-5-5', input: 4, output: 314, cacheRead: 22_487, cacheWrite: 14_130, requests: 2, at: 2000,

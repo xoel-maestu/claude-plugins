@@ -6,7 +6,8 @@ import { FIVE_MINUTES, HISTORY, HOUR, statusOf } from './cache'
 import type { Cache, Loss } from './cache'
 import { split } from './fit'
 import { hitRate } from './ledger'
-import type { Counts, Ledger } from './ledger'
+import type { Counts, Ledger, Models } from './ledger'
+import { plusModels } from './ledger'
 import { costAt } from './pricing'
 
 export type Language = 'en' | 'es'
@@ -72,6 +73,7 @@ type Words = {
   agentColumns: Record<AgentColumn, string>
   allAgents: string
   overall: string
+  models: string
   mainCrumb: string
 }
 
@@ -105,6 +107,7 @@ const WORDS: Record<Language, Words> = {
     agentColumns: { requests: 'Requests', input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output', hit: 'Cache hit', model: 'Model' },
     allAgents: 'All agents',
     overall: 'Overall',
+    models: 'Models',
     mainCrumb: 'Main',
   },
   es: {
@@ -136,6 +139,7 @@ const WORDS: Record<Language, Words> = {
     agentColumns: { requests: 'Peticiones', input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida', hit: 'Acierto', model: 'Modelo' },
     allAgents: 'Todos los agentes',
     overall: 'En conjunto',
+    models: 'Modelos',
     mainCrumb: 'Principal',
   },
 }
@@ -337,32 +341,31 @@ type Section = {
   selfRequests: number
 }
 
-function agentRows (section: Section, words: Words, room: number, labelWidth: number, maxAgents: number): Row[] {
-  const shown = section.children.slice(0, maxAgents)
-  const labels = [words.agents(section.count), ...shown.map(agent => cut(agent.label, AGENT_LABEL)), words.allAgents, words.overall]
-  const width = Math.max(labelWidth, ...labels.map(text => text.length + GAP.length))
-  type Line = { label: string; press?: string; values: Partial<Record<AgentColumn, string>> }
-  const valuesOf = (counts: Counts, requests: number, model?: string): Line['values'] => ({
-    requests: String(requests),
-    input: tokens(valueOf(counts, 'input')),
-    cacheRead: tokens(counts.cacheRead),
-    cacheWrite: tokens(counts.cacheWrite),
-    uncached: tokens(counts.input),
-    output: tokens(counts.output),
-    hit: hitText(counts),
-    ...(model === undefined ? {} : { model: modelName(model) }),
-  })
-  const lines: Line[] = [
-    ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), press: `agent:${agent.id}`, values: valuesOf(agent, agent.requests, agent.model) })),
-    { label: words.allAgents, values: valuesOf(section.total, section.requests) },
-    { label: words.overall, values: valuesOf(plusCounts(section.total, section.self), section.requests + section.selfRequests) },
-  ]
-  for (const columns of AGENT_LAYOUTS) {
+type Line = { label: string; press?: string; values: Partial<Record<AgentColumn, string>> }
+
+const valuesOf = (counts: Counts, requests: number, model?: string): Line['values'] => ({
+  requests: String(requests),
+  input: tokens(valueOf(counts, 'input')),
+  cacheRead: tokens(counts.cacheRead),
+  cacheWrite: tokens(counts.cacheWrite),
+  uncached: tokens(counts.input),
+  output: tokens(counts.output),
+  hit: hitText(counts),
+  ...(model === undefined ? {} : { model: modelName(model) }),
+})
+
+/**
+ * A section's table: a header (`title` over the column names) and its lines, in the widest of
+ * `layouts` that fits `room`; none where none fits.
+ */
+function tableSection (title: string, lines: Line[], words: Words, room: number, labelWidth: number, layouts: AgentColumn[][]): Row[] {
+  const width = Math.max(labelWidth, ...[title, ...lines.map(line => line.label)].map(text => text.length + GAP.length))
+  for (const columns of layouts) {
     const widths = columns.map(column => Math.max(words.agentColumns[column].length, ...lines.map(line => (line.values[column] ?? '').length)))
     const cells = (texts: string[], tone: Tone): Cell[] =>
       texts.map((text, i) => ({ text: i < texts.length - 1 ? text.padEnd(widths[i]!) + GAP : text, tone }))
     const rows: Row[] = [
-      [{ text: words.agents(section.count).padEnd(width), tone: 'plain' }, ...cells(columns.map(column => words.agentColumns[column]), 'dim')],
+      [{ text: title.padEnd(width), tone: 'plain' }, ...cells(columns.map(column => words.agentColumns[column]), 'dim')],
       ...lines.map((line): Row => [
         // A pressable label is a button of its own text; the padding after it is not.
         ...(line.press === undefined
@@ -382,6 +385,33 @@ function agentRows (section: Section, words: Words, room: number, labelWidth: nu
     if (Math.max(...trimmed.map(widthOfRow)) <= room) return trimmed
   }
   return []
+}
+
+function agentRows (section: Section, words: Words, room: number, labelWidth: number, maxAgents: number): Row[] {
+  const shown = section.children.slice(0, maxAgents)
+  const lines: Line[] = [
+    ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), press: `agent:${agent.id}`, values: valuesOf(agent, agent.requests, agent.model) })),
+    { label: words.allAgents, values: valuesOf(section.total, section.requests) },
+    { label: words.overall, values: valuesOf(plusCounts(section.total, section.self), section.requests + section.selfRequests) },
+  ]
+  return tableSection(words.agents(section.count), lines, words, room, labelWidth, AGENT_LAYOUTS)
+}
+
+/** The models table's layouts: the agents table's, without its Model column (the row is the model). */
+const MODEL_LAYOUTS = AGENT_LAYOUTS.map(columns => columns.filter(column => column !== 'model'))
+
+/**
+ * A loop's models section: a row per model that answered in it or under it, the most requests
+ * first, with the same columns as the agents table. Only where more than one model answered.
+ */
+function modelRows (models: Models, words: Words, room: number, labelWidth: number): Row[] {
+  // Ids of one model (with and without a date) are one row, under the name the card shows.
+  const byName: Models = {}
+  for (const [model, row] of Object.entries(models)) Object.assign(byName, plusModels(byName, { [modelName(model)]: row }))
+  const entries = Object.entries(byName).sort(([a, x], [b, y]) => y.requests - x.requests || a.localeCompare(b))
+  if (entries.length < 2) return []
+  const lines = entries.map(([name, row]): Line => ({ label: name, values: valuesOf(row, row.requests) }))
+  return tableSection(words.models, lines, words, room, labelWidth, MODEL_LAYOUTS)
 }
 
 /**
@@ -467,7 +497,16 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     selfRequests: ledger?.requests ?? 0,
   }
   const agentSection = section === undefined ? [] : agentRows(section, words, room, labelWidth, maxAgents)
-  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow))
+  // Every model that answered in this loop or under it: the main thread's agents' from their
+  // session-wide tally (past the kept rows), an agent's from the rows under it.
+  const own = (agent === undefined ? view.ledger?.models : agent.models) ?? {}
+  const under = agent === undefined ? agents?.models ?? {} : below.reduce((sum, row) => plusModels(sum, row.models ?? {}), {} as Models)
+  const models = plusModels(own, under)
+  // Counts kept from before models were tallied leave the rows short of the loop's requests: then none.
+  const loopRequests = (ledger?.requests ?? 0) + (agent === undefined ? agents?.requests ?? 0 : below.reduce((sum, row) => sum + row.requests, 0))
+  const isWhole = Object.values(models).reduce((sum, row) => sum + row.requests, 0) === loopRequests
+  const modelSection = isWhole ? modelRows(models, words, room, labelWidth) : []
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const rows: Row[] = []
@@ -495,6 +534,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   }
   rows.push(...extra.map(row => shorten(row, content)))
   if (agentSection.length > 0) rows.push([], ...agentSection)
+  if (modelSection.length > 0) rows.push([], ...modelSection)
 
   const fitted = rows.map(row => fitRow(row, content))
   return { width: content + FRAME, content, height: fitted.length + 2, rows: fitted, depth: selected?.path.length ?? 0 }
