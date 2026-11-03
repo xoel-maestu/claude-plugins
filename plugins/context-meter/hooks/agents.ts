@@ -77,6 +77,7 @@ export function add (
     requests: (before?.requests ?? 0) + 1,
     at,
     last: counts,
+    ...(before === undefined ? {} : { previous: { ...before.last, model: before.model } }),
     cache: observe(cacheBefore, usage, at, isSubscription, setting),
     cost: price === null ? (before?.cost ?? NO_COST) : plusCost(before?.cost ?? NO_COST, price),
     isUnpriced: (before?.isUnpriced ?? false) || price === null,

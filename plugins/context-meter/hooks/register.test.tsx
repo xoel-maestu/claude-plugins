@@ -474,9 +474,35 @@ test('each main-thread response is the last request and adds to the session', as
     '               Input    Cache read   Cache write   Uncached   Output',
     'Last request   105.2k   104k         1k            200        500',
     'Session        210.2k   204k         5k            1.2k       2.5k',
-    'Cache hit      97% of input read from cache',
+    'Cache hit      97% of input read from cache · last request 99% ↑4',
     'Cost           ≈ $0.8000 at list prices (session, all agents)',
   ])
+})
+
+test("the last request's hit rate against the one before: a model switch is named, not compared; a narrow band shortens, then drops it", async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 90_000, 10_000, 100))
+  await respond($, w, counts(0, 0, 100_000, 100, 'model-b'))
+  expect((await tokenLines($)).find(line => line.startsWith('Cache hit'))).toBe('Cache hit      45% of input read from cache · last request 0% (model switch)')
+  await respond($, w, counts(0, 60_000, 40_000, 100, 'model-b'))
+  const hitAt = async (columns: number) => (await cardIn(await band($, columns))).rows.find(row => row.includes('Cache hit'))?.trim()
+  expect(await hitAt(115)).toBe('Cache hit      50% of input read from cache · last request 60% ↑60')
+  expect(await hitAt(62)).toBe('Cache hit      50% of input read from cache · 60% ↑60')
+  expect(await hitAt(50)).toBe('Cache hit      50% of input read from cache')
+  // After /clear the first request has none before it.
+  await $.session.end({ reason: 'clear' } as never)
+  await respond($, w, counts(0, 60_000, 40_000, 100, 'model-b'))
+  expect((await tokenLines($)).find(line => line.startsWith('Cache hit'))).toBe('Cache hit      60% of input read from cache')
+})
+
+test('the model switch in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(0, 90_000, 10_000, 100))
+  await respond($, w, counts(0, 0, 100_000, 100, 'model-b'))
+  expect((await tokenLines($)).find(line => line.startsWith('Acierto'))).toBe('Acierto de caché    45% de la entrada leída de caché · última petición 0% (cambio de modelo)')
 })
 
 test('a step returns without waiting for the recording; two quick steps count once each', async ($, on) => {
@@ -496,7 +522,7 @@ test('a step returns without waiting for the recording; two quick steps count on
     '               Input   Cache read   Cache write   Uncached   Output',
     'Last request   2k      0            0             2k         20',
     'Session        3k      0            0             3k         30',
-    'Cache hit      0% of input read from cache',
+    'Cache hit      0% of input read from cache · last request 0% =',
   ])
 })
 
@@ -633,7 +659,7 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     '               Input   Cache read   Cache write   Uncached   Output',
     'Last request   30k     0            30k           2          148',
     'Session        47.6k   4.8k         42.8k         4          314',
-    'Cache hit      10% of input read from cache',
+    'Cache hit      10% of input read from cache · last request 0% ↓27',
     // Haiku 5.5 up to 100k: (4 × 0.10 + 4,846 × 0.01 + 314 × 0.50 + 42,795 × 0.125) / 1e6 = $0.00556.
     'Cost           ≈ $0.0056 at API list prices, from its token counts',
     `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
@@ -997,7 +1023,7 @@ test('the band card at 120 columns: the table in full, the cache rows after it',
     '                Input   Cache read   Cache write   Uncached   Output',
     ' Last request   2.2M    2M           154.9k        29.8k      85.6k',
     ' Session        2.3M    2.1M         160k          31k        88k',
-    ' Cache hit      92% of input read from cache',
+    ' Cache hit      92% of input read from cache · last request 91% ↓4',
     ' Cost           ≈ $4.12 at list prices (session, all agents)',
     ` Cache          active until ${clockTime(5 * MIN)} (in 5m, TTL 5m?)`,
     ' No cache losses this session',
@@ -1028,7 +1054,7 @@ test('the token rows in Spanish', { options: { language: 'es' } }, async ($, on)
     '                     Entrada   Caché leída   Caché escrita   Sin caché   Salida',
     ' Última petición     2.2M      2M            154.9k          29.8k       85.6k',
     ' Sesión              2.3M      2.1M          160k            31k         88k',
-    ' Acierto de caché    92% de la entrada leída de caché',
+    ' Acierto de caché    92% de la entrada leída de caché · última petición 91% ↓4',
     ' Coste               ≈ $4.12 a precio de lista (sesión, todos los agentes)',
     ` Caché               activa hasta las ${clockTime(5 * MIN)} (en 5m, TTL 5m?)`,
     ' Sin pérdidas de caché en esta sesión',

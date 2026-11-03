@@ -20,7 +20,7 @@ test("each agent's requests add up in its own row and in the total", () => {
   let state = add(EMPTY, explore, usage(2, 4846, 12_795, 166), 1000)
   state = add(state, explore, usage(2, 17_641, 1335, 148), 2000)
   state = add(state, { id: 'a2', type: 'general-purpose', name: 'reviewer' }, usage(10, 0, 9000, 50, 'claude-sonnet-5-5'), 3000)
-  expect(state.agents.map(({ cache, cost, models, ...rest }) => rest)).toEqual([
+  expect(state.agents.map(({ cache, cost, models, previous, ...rest }) => rest)).toEqual([
     { id: 'a2', label: 'reviewer', model: 'claude-sonnet-5-5', input: 10, output: 50, cacheRead: 0, cacheWrite: 9000, requests: 1, at: 3000,
       last: { input: 10, output: 50, cacheRead: 0, cacheWrite: 9000 }, isUnpriced: false },
     { id: 'a1', label: 'Explore', model: 'claude-haiku-5-5', input: 4, output: 314, cacheRead: 22_487, cacheWrite: 14_130, requests: 2, at: 2000,
@@ -132,4 +132,11 @@ test('the tree: children by parent, descendants at any depth, the path from the 
   expect(pathOf(state, 'c').map(row => row.id)).toEqual(['a', 'b', 'c'])
   expect(pathOf(state, 'x')).toEqual([])
   expect(sumOf(descendantsOf(state, 'a')).input).toBe(6)
+})
+
+test("an agent's previous request keeps the model that answered it", () => {
+  let state = add(EMPTY, explore, usage(1, 90, 10, 1, 'claude-haiku-5-5'), 1)
+  expect(state.agents[0]!.previous).toBeUndefined()
+  state = add(state, explore, usage(1, 0, 100, 1, 'claude-sonnet-5-5'), 2)
+  expect(state.agents[0]!.previous).toEqual({ input: 1, cacheRead: 90, cacheWrite: 10, output: 1, model: 'claude-haiku-5-5' })
 })

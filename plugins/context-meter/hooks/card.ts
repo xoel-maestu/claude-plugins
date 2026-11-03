@@ -9,6 +9,7 @@ import { hitRate } from './ledger'
 import type { Counts, Ledger, Models } from './ledger'
 import { plusModels } from './ledger'
 import { costAt } from './pricing'
+import { trendOf } from './trend'
 
 export type Language = 'en' | 'es'
 
@@ -54,6 +55,8 @@ type Words = {
   session: string
   hit: string
   hitText: string
+  lastHit: string
+  modelSwitch: string
   cost: string
   /** After the amount: on a subscription it is not billed, otherwise it is an estimate. */
   costTail: Record<'subscription' | 'list' | 'agent', { full: string; short: string }>
@@ -87,6 +90,8 @@ const WORDS: Record<Language, Words> = {
     session: 'Session',
     hit: 'Cache hit',
     hitText: 'of input read from cache',
+    lastHit: 'last request',
+    modelSwitch: 'model switch',
     cost: 'Cost',
     costTail: {
       subscription: { full: 'at API list prices (not billed on your plan)', short: '(not billed)' },
@@ -119,6 +124,8 @@ const WORDS: Record<Language, Words> = {
     session: 'Sesión',
     hit: 'Acierto de caché',
     hitText: 'de la entrada leída de caché',
+    lastHit: 'última petición',
+    modelSwitch: 'cambio de modelo',
     cost: 'Coste',
     costTail: {
       subscription: { full: 'a precio de lista de la API (no se factura en tu plan)', short: '(no se factura)' },
@@ -507,8 +514,18 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     .find(rows => Math.max(...rows.map(widthOfRow)) <= room)
   const tokenRows: Row[] = table ?? []
   const hit = ledger === undefined ? null : hitRate(ledger.total)
+  // The session's hit rate, then the last request's against the one before it (`↑4`, `↓28`, `=`),
+  // shortened where the band is narrow, else left out.
+  let hitRow: Draft | undefined
   if (table !== undefined && hit !== null) {
-    tokenRows.push([{ text: words.hit.padEnd(labelWidth), tone: 'plain' }, { text: `${Math.round(hit * 100)}% `, tone: 'plain' }, { text: words.hitText, tone: 'dim' }])
+    hitRow = [{ text: words.hit.padEnd(labelWidth), tone: 'plain' }, { text: `${Math.round(hit * 100)}% `, tone: 'plain' }, { text: words.hitText, tone: 'dim' }]
+    const trend = trendOf(last!, agent === undefined ? ledger!.previous : agent.previous)
+    // With no request before it to compare with, the last one adds nothing to the session's rate.
+    if (trend !== null) {
+      const change = trend.kind === 'steady' ? (trend.delta > 0 ? ` ↑${trend.delta}` : trend.delta < 0 ? ` ↓${-trend.delta}` : ' =') : ''
+      const full = `${words.lastHit} ${trend.percent}%${trend.kind === 'switch' ? ` (${words.modelSwitch})` : change}`
+      hitRow.push({ text: ` · ${full}`, tone: 'plain', short: ` · ${trend.percent}%${change}` })
+    }
   }
   const hasCache = cache !== undefined && (cache.last !== undefined || cache.clearedAt !== undefined)
   const extra = hasCache ? cacheRows(cache!, ttl, isTtlInferred, now, words, language, labelWidth, maxLosses) : []
@@ -545,7 +562,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   const loopRequests = (ledger?.requests ?? 0) + (agent === undefined ? agents?.requests ?? 0 : below.reduce((sum, row) => sum + row.requests, 0))
   const tallied = sources.reduce((sum, source) => sum + Object.values(source.models).reduce((n, row) => n + row.requests, 0), 0)
   const modelSection = tallied === loopRequests ? modelRows(sources, words, room, labelWidth) : []
-  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(hitRow === undefined ? [] : [widthOfRow(hitRow)]), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const rows: Row[] = []
@@ -567,6 +584,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   rows.push(figures, [{ text: '━'.repeat(bar.filled), tone: 'bar' }, { text: '─'.repeat(bar.empty), tone: 'dim' }])
   if (compactAt !== null) rows.push([{ text: `${words.compact} ~${tokens(compactAt)}`, tone: 'dim' }])
   rows.push(...tokenRows)
+  if (hitRow !== undefined) rows.push(shorten(hitRow, content))
   if (costDraft !== undefined) {
     // The amount always fits where the table does: only its tail shortens or goes.
     rows.push(shorten(costDraft, content))
