@@ -9,7 +9,7 @@ import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
-import { EMPTY as NO_AGENTS, add as addAgent, pathOf, seeTtl, since as agentsSince } from './agents'
+import { EMPTY as NO_AGENTS, add as addAgent, childrenOf, pathOf, seeTtl, since as agentsSince } from './agents'
 import { windowOf } from './pricing'
 import { MAX_LINES, lineOf, sessionOf, timelineOf, withLine } from './timeline'
 import type { TimelineInput, ToolTime } from './timeline'
@@ -544,6 +544,8 @@ export const register: Register = (on, options) => {
         // The counts start over after the responses already queued; the next takes the new session start.
         await update($, ledger, () => EMPTY)
         await update($, agents, state => ({ ...NO_AGENTS, ...(state.lastTtl === undefined ? {} : { lastTtl: state.lastTtl }) }))
+        // The new session's estimate at once, rather than at the next 2 s check: the meter is gone until it comes.
+        void $.session.usage().then(usage => sync($, usage.context, true)).catch(() => {})
         selectedId = undefined
         const now = await $.clock.now()
         // The TTL setting and the billing do not change with /clear: those readings are kept.
@@ -607,6 +609,11 @@ export const register: Register = (on, options) => {
   })
   on('classic.UserPromptSubmit', async ($, e, next) => {
     seeTranscript(e)
+    // A new message: an agent picked on the card goes back to the main thread's card.
+    if (selectedId !== undefined) {
+      selectedId = undefined
+      $.ui.invalidate('ui.render')
+    }
     return next(e)
   })
   // A subagent's end: its transcript holds its last response, so its TTL is read once more.
@@ -658,7 +665,8 @@ export const register: Register = (on, options) => {
     let agentId: string | undefined
     if (wanted !== '') {
       const listed = (await read($, agents)).agents
-      const byNumber = /^\d+$/.test(wanted) ? listed[Number(wanted) - 1] : undefined
+      // The number counts the main thread's agents as the card lists them; a name, any agent.
+      const byNumber = /^\d+$/.test(wanted) ? childrenOf({ agents: listed } as never)[Number(wanted) - 1] : undefined
       const byName = listed.find(agent => agent.label.toLowerCase() === wanted.toLowerCase()) ??
         listed.find(agent => agent.label.toLowerCase().startsWith(wanted.toLowerCase()))
       const found = byNumber ?? byName

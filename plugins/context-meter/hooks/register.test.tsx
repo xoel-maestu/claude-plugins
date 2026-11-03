@@ -1949,3 +1949,43 @@ test('timeline on: a tool run before /clear lands on no line after it', { option
   await runCommand($)
   expect(t.lines().map(line => line.tools)).toEqual([undefined, undefined])
 })
+
+test('a new message sends a picked agent back to the main card; /context-meter <n> counts the agents as the card lists them', async ($, on) => {
+  on('classic.UserPromptSubmit', () => ({}))
+  const w = world(on, fill(62))
+  w.live.agentList = [
+    { id: 'p', type: 'general-purpose', name: 'lead', description: '', status: 'running' },
+    { id: 'c', type: 'Explore', name: 'scout', description: '', status: 'running', parentId: 'p' } as never,
+    { id: 'q', type: 'Plan', name: 'planner', description: '', status: 'running' },
+  ]
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'p')
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'c')
+  await w.clock.advance(1000)
+  await respond($, w, counts(1, 0, 1000, 1), 'q')
+  // The card lists the main thread's agents, planner then lead; scout is lead's.
+  expect(((await run($, '2')).text ?? '').split('\n')[0]).toBe('Main › lead · model-a')
+  const ui = await band($, 115)
+  await ui.press({ key: 'agent:q' })
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › planner/)
+  await $.classic.UserPromptSubmit({ prompt: 'synthetic' } as never)
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Context /)
+})
+
+test('after /clear the estimate comes at once, not at the next check', async ($, on) => {
+  const w = world(on, fill(62), { percentage: 20, totalTokens: 40_000 })
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  // After /clear the host has no figure for the new window yet.
+  w.live.context = fill()
+  await $.session.end({ reason: 'clear' } as never)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  // No 2 s tick has run: the footer already shows the new estimate.
+  const ui = await footer($)
+  expect((await row(ui)).join('')).toMatch(/~/)
+})
