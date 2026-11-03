@@ -41,6 +41,12 @@
       "description": "Prompt cache lifetime the card counts down and judges idle losses by: auto (the TTL the session transcript shows the last main-thread cache write used; until one is seen, inferred: 1h on a subscription or once a hit after a pause of over 5 minutes shows it, 5m otherwise), 5m or 1h.",
       "options": ["auto", "5m", "1h"],
       "default": "auto"
+    },
+    "cacheAlert": {
+      "type": "boolean",
+      "title": "Cache expiry alert",
+      "description": "Color the meter's ctx prefix with the warning color in the last 10% of the main thread's prompt cache TTL (at least 30 seconds) and with the error color once it has expired.",
+      "default": true
     }
   }
 }

@@ -134,3 +134,17 @@ export function statusOf (cache: Cache, ttl: number, now: number): Status {
   const elapsed = Math.max(now, last.at) - last.at
   return elapsed < ttl ? { kind: 'active', left: ttl - elapsed } : { kind: 'expired', ago: elapsed - ttl }
 }
+
+/** The main thread's cache as the footer warns of it: alive, in its last stretch, or gone. */
+export type Alert = 'fresh' | 'expiring' | 'expired'
+
+/** The last stretch the footer warns in: a tenth of the TTL, at least 30 seconds. */
+export const expiringFor = (ttl: number): number => Math.max(ttl / 10, 30_000)
+
+/** Whether the cache is alive, about to expire or expired at `now`; null with no cache. */
+export function alertOf (cache: Cache, ttl: number, now: number): Alert | null {
+  const status = statusOf(cache, ttl, now)
+  if (status.kind === 'none') return null
+  if (status.kind === 'expired') return 'expired'
+  return status.left <= expiringFor(ttl) ? 'expiring' : 'fresh'
+}
