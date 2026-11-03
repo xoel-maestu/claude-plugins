@@ -454,7 +454,12 @@ const tokenLines = async ($: Engine) => {
   return at === -1 ? rows : rows.slice(0, at)
 }
 /** The cache rows /context-meter prints. */
-const cacheLines = async ($: Engine) => (await commandLines($)).filter((line, i, all) => i >= all.findIndex(row => /^Cach[eé]  /.test(row)))
+const cacheLines = async ($: Engine) => {
+  const rows = await commandLines($)
+  const at = rows.findIndex(row => /^Cach[eé]  /.test(row))
+  const end = rows.indexOf('', at)
+  return rows.slice(at, end === -1 ? undefined : end)
+}
 
 test('each main-thread response is the last request and adds to the session', async ($, on) => {
   const w = world(on, fill(62))
@@ -521,7 +526,9 @@ test("a compaction's own summarizer request adds nothing to the tokens", async (
 const agentLines = async ($: Engine) => {
   const rows = await commandLines($)
   const at = rows.findIndex(line => /^Agent(s|es) \(/.test(line))
-  return at === -1 ? [] : rows.slice(at)
+  if (at === -1) return []
+  const end = rows.indexOf('', at)
+  return rows.slice(at, end === -1 ? undefined : end)
 }
 
 test("a subagent's responses fill its row; a fork no list names counts nowhere; main is unchanged", async ($, on) => {
@@ -539,11 +546,11 @@ test("a subagent's responses fill its row; a fork no list names counts nowhere; 
   await respond($, w, counts(5000, 5000, 5000, 5000), 'memory-fork')
   expect(await tokenLines($)).toEqual(main)
   expect(await agentLines($)).toEqual([
-    'Agents (2)     Requests   Input   Cache read   Cache write   Uncached   Output   Cache hit   Model',
-    'reviewer       1          9k      0            9k            10         50       0%          sonnet 5.5',
-    'Count files    2          36.6k   22.5k        14.1k         4          314      61%         haiku 5.5',
-    'All agents     3          45.6k   22.5k        23.1k         14         364      49%',
-    'Overall        4          55.6k   31.5k        24.1k         14         464      57%',
+    'Agents (2)         Requests   Input   Cache read   Cache write   Uncached   Output   Cache hit   Model',
+    'reviewer           1          9k      0            9k            10         50       0%          sonnet 5.5',
+    'Count files        2          36.6k   22.5k        14.1k         4          314      61%         haiku 5.5',
+    'Subagents total    3          45.6k   22.5k        23.1k         14         364      49%',
+    'Main + subagents   4          55.6k   31.5k        24.1k         14         464      57%',
   ])
 })
 
@@ -710,17 +717,17 @@ test("a subagent's own subagents: listed in its card, not the main thread's; Ove
   const flat = (text?: string) => (text ?? '').split('\n').map(line => line.replace(/ +/g, ' '))
   const main = flat((await run($, '')).text)
   // The main thread lists the agent it spawned; All agents and Overall count every agent under it.
-  expect(main.filter(line => /^(lead|scout|deep|All agents|Overall) /.test(line))).toEqual([
+  expect(main.filter(line => /^(lead|scout|deep|Subagents total|Main \+ subagents) /.test(line))).toEqual([
     'lead 1 1k 0 1k 10 10 0% sonnet 5.5',
-    'All agents 3 7.1k 0 7k 70 70 0%',
-    'Overall 4 17.1k 9k 8k 70 170 53%',
+    'Subagents total 3 7.1k 0 7k 70 70 0%',
+    'Main + subagents 4 17.1k 9k 8k 70 170 53%',
   ])
   const lead = flat((await run($, 'lead')).text)
   expect(lead[0]).toBe('Main › lead · sonnet 5.5')
-  expect(lead.filter(line => /^(scout|deep|All agents|Overall) /.test(line))).toEqual([
+  expect(lead.filter(line => /^(scout|deep|Subagents total|This agent \+ subagents) /.test(line))).toEqual([
     'scout 1 2k 0 2k 20 20 0% haiku 5.5',
-    'All agents 2 6.1k 0 6k 60 60 0%',
-    'Overall 3 7.1k 0 7k 70 70 0%',
+    'Subagents total 2 6.1k 0 6k 60 60 0%',
+    'This agent + subagents 3 7.1k 0 7k 70 70 0%',
   ])
   expect(flat((await run($, 'deep')).text)[0]).toBe('Main › lead › scout › deep · haiku 5.5')
   const ui = await band($, 115)
@@ -784,6 +791,83 @@ test("an agent on the session's model takes the host's window, unmarked", async 
   expect(((await run($, '1')).text ?? '').split('\n')[1]).toBe('Context   30k / 200k   15%')
 })
 
+/** The Models rows /context-meter prints, from its header to the end of the section. */
+const modelLines = async ($: Engine, args = '') => {
+  const rows = ((await run($, args)).text ?? '').split('\n')
+  const at = rows.findIndex(line => /^(Models|Modelos) /.test(line))
+  if (at === -1) return []
+  const end = rows.indexOf('', at)
+  return rows.slice(at, end === -1 ? undefined : end).map(line => line.replace(/ +/g, ' '))
+}
+
+test('Models: a row per model under the loop, the most requests first, summing to Overall; none with one model', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  expect(await modelLines($)).toEqual([])
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(2, 0, 30_000, 148, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(10, 0, 9000, 50, 'claude-sonnet-5-5'), 'a2')
+  expect(await modelLines($)).toEqual([
+    // Cost at list prices, writes at 5m (agents) and the main thread's TTL; model-a is not in the price table.
+    'Models Requests Input Cache read Cache write Uncached Output Cache hit Cost',
+    'haiku 5.5 2 47.6k 4.8k 42.8k 4 314 10% $0.0056',
+    // A tie in requests goes by name.
+    'model-a 1 10k 9k 1k 0 100 90% –',
+    'sonnet 5.5 1 9k 0 9k 10 50 0% $0.0230',
+  ])
+  // An agent's card: only its own model, so no section.
+  expect(await modelLines($, '1')).toEqual([])
+})
+
+test("an agent that changed model counts each under its own", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(1, 0, 1000, 1, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(1, 0, 2000, 1, 'claude-sonnet-5-5'), 'a1')
+  expect((await modelLines($, '1')).slice(1)).toEqual([
+    'haiku 5.5 1 1k 0 1k 1 1 0% $0.0001',
+    'sonnet 5.5 1 2k 0 2k 1 1 0% $0.0050',
+  ])
+})
+
+test('a ledger kept from before models were tallied shows no Models section rather than short rows', async ($, on) => {
+  on('state.get', ($, e, next) => (e as { key: string }).key === 'ledger'
+    ? { value: { value: { startedAt: 0, last: { input: 1, cacheRead: 1, cacheWrite: 1, output: 1, model: 'model-a', at: 1 }, total: { input: 9, cacheRead: 9, cacheWrite: 9, output: 9 }, requests: 9 }, version: 3 } }
+    : next(e))
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await respond($, w, counts(1, 0, 1000, 1, 'claude-haiku-5-5'), 'a1')
+  expect(await modelLines($)).toEqual([])
+})
+
+test("ids of one model are one row; an agent's card sums the models under it; the band drops Models' columns, then the section", async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [
+    { id: 'p', type: 'general-purpose', name: 'lead', description: '', status: 'running' },
+    { id: 'c', type: 'Explore', name: 'scout', description: '', status: 'running', parentId: 'p' } as never,
+  ]
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(1, 0, 1000, 1, 'claude-sonnet-4-5'), 'p')
+  await respond($, w, counts(1, 0, 1000, 1, 'claude-sonnet-4-5-20250929'), 'p')
+  await respond($, w, counts(1, 0, 2000, 1, 'claude-haiku-5-5'), 'c')
+  expect((await modelLines($, 'lead')).slice(1)).toEqual([
+    'sonnet 4.5 2 2k 0 2k 2 2 0% $0.0075',
+    'haiku 5.5 1 2k 0 2k 1 1 0% $0.0003',
+  ])
+  const header = async (columns: number) =>
+    (await cardIn(await band($, columns))).rows.find(row => row.includes('Models'))?.trim().replace(/ +/g, ' ')
+  expect(await header(115)).toBe('Models Requests Input Cache read Cache write Uncached Output Cache hit Cost')
+  expect(await header(60)).toBe('Models Input Cache read Cache hit Cost')
+  expect(await header(20)).toBeUndefined()
+})
+
 test('no subagent: no Agents section', async ($, on) => {
   const w = world(on, fill(62))
   await startSession($)
@@ -844,8 +928,8 @@ test('the agents section in Spanish', { options: { language: 'es' } }, async ($,
   expect((await agentLines($)).map(line => line.replace(/ +/g, ' '))).toEqual([
     'Agentes (1) Peticiones Entrada Caché leída Caché escrita Sin caché Salida Acierto Modelo',
     'Explore 1 17.6k 4.8k 12.8k 2 166 27% haiku 5.5',
-    'Todos los agentes 1 17.6k 4.8k 12.8k 2 166 27%',
-    'En conjunto 2 27.6k 13.8k 13.8k 2 266 50%',
+    'Total subagentes 1 17.6k 4.8k 12.8k 2 166 27%',
+    'Principal + subagentes 2 27.6k 13.8k 13.8k 2 266 50%',
   ])
 })
 

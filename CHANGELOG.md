@@ -4,8 +4,10 @@
 
 ### context-meter
 
-- An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache read, cache write, uncached, output, cache hit, model), the total over every subagent, and Overall: the main thread and the subagents together. Shown once a subagent has answered; the engine's own forks are left out.
+- An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache read, cache write, uncached, output, cache hit, model), the total over every subagent, and the main thread and the subagents together. Shown once a subagent has answered; the engine's own forks are left out.
 - An agent's own card, the same as the main thread's: click its row (or open its transcript from the tasks list) to see its context, last request, session, cache hit, cost at API list prices, prompt cache TTL and expiry, cache losses, and the agents it spawned; `/context-meter <n|name>` prints it. A path at the top goes back up. Its TTL comes from its own transcript.
+- A Models section in each card: a row per model that answered in that loop or under it, with its cost at API list prices, shown when there is more than one.
+- The agents table's totals are named for what they sum: Subagents total, and Main + subagents (This agent + subagents in an agent's card).
 - The card's frame is colored by depth: the theme's accent for the main thread, other colors for subagents and their subagents.
 - Costs under a dollar show four decimals, as `/cost` prints them.
 - The cache countdown and the idle time of a loss are timed from the start of each request instead of its end, as Anthropic's prompt caching docs time a cache entry. A long response no longer pushes the expiry later than it is. The first request after upgrading measures its idle time from the end of the last request recorded by 1.0.0.

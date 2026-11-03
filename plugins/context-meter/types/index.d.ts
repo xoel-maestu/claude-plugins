@@ -31,6 +31,8 @@ export type ContextMeterLedger = {
   last?: ContextMeterCounts & { model: string; at: number }
   total: ContextMeterCounts
   requests: number
+  /** The counts and requests by the model that answered; absent in a ledger written before it was kept. */
+  models?: Record<string, ContextMeterModel>
 }
 
 /**
@@ -56,11 +58,22 @@ export type ContextMeterAgents = {
     cache: ContextMeterCache
     cost: { base: number; write5m: number; write1h: number }
     isUnpriced: boolean
+    /** Its counts and requests by the model that answered. */
+    models?: Record<string, ContextMeterModel>
   })[]
   total: ContextMeterCounts
   requests: number
   count: number
+  /** Every agent's counts and requests by the model that answered, past the kept rows too. */
+  models?: Record<string, ContextMeterModel>
   lastTtl?: ContextMeterTtl
+}
+
+/** One model's counts and requests, and their cost at list prices in parts (`isUnpriced`: a request was of a model the price table lacks). */
+export type ContextMeterModel = ContextMeterCounts & {
+  requests: number
+  cost?: { base: number; write5m: number; write1h: number }
+  isUnpriced?: boolean
 }
 
 /** A cache loss: when, the tokens of the previous prefix not read back, the first cause that held, and the pause before it (ms). */
