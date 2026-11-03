@@ -55,6 +55,8 @@ CI does not run `tsc`. The type definitions a plugin compiles against (`.claude-
 
 The idea of meters drawn in the prompt footer comes from [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 
+context-meter 1.1's subagent and model tables, hit-rate trend, TTL alert, cache savings and timeline take their ideas from [zhumengzhu/opencode-cache-hit](https://github.com/zhumengzhu/opencode-cache-hit) (MIT), a plugin for OpenCode; no code is taken from it.
+
 ## License
 
 [MIT](LICENSE) © 2026 Xoel García Maestu

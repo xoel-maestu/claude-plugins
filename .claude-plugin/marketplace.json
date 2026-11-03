@@ -12,7 +12,7 @@
       "name": "context-meter",
       "source": "./plugins/context-meter",
       "description": "The context window fill at the bottom right of the prompt, with a detail card on hover and /context-meter.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "category": "productivity"
     },
     {

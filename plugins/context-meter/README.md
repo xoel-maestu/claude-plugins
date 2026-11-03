@@ -66,6 +66,32 @@ Claude Code reports neither a model's context window other than the session mode
 
 A per-agent cost taken as the change in the session's cost around each of its responses was tried and dropped: Claude Code's own requests (titles, suggestions) land between them and are invisible to plugins, so they were charged to whichever agent answered next.
 
+## Timeline
+
+With `timeline` on, every request (the main thread's and each agent's) adds one JSON line to `context-meter.jsonl` in the session's folder, beside its transcript (`~/.claude/projects/<project>/<session>/context-meter.jsonl`, under `CLAUDE_CONFIG_DIR` where that is set). The file keeps the newest 5,000 lines and stays with the session's folder; one that exists but cannot be read (over 4 MiB) is left alone. A line holds numbers, ids and names only: the model, the tool names and the agent's type, which for an MCP tool or a custom agent are the names given to them. Never the text of a prompt, a response, or a tool's input or output:
+
+| Field | |
+| --- | --- |
+| `schema` | `1` |
+| `at` | When the request started, local time with its offset |
+| `session` | The session id (the transcript's file name) |
+| `scope`, `agent`, `agentType` | `main`, or `agent` with the agent's id and type |
+| `model` | The model that answered |
+| `input`, `cacheRead`, `cacheWrite`, `output` | The API's token counts (`input` is the uncached part) |
+| `hit` | Cache read over all the input, 0 to 1 |
+| `ttl`, `ttlInferred` | The cache TTL in force, and whether it was inferred |
+| `cost` | The request at API list prices, its writes at `ttl` (absent for a model the price table lacks) |
+| `loss` | A cache loss: `cause`, `lost` tokens, `gapMs` since the request before, `rewrite` and `extra` in US dollars |
+| `tools` | The tools the loop ran before this request, since its previous one: `name` and `ms` |
+
+```bash
+F=~/.claude/projects/<project>/<session>/context-meter.jsonl
+# Hit rate per request, main thread
+jq -r 'select(.scope == "main") | [.at, .hit, .cacheRead, .cacheWrite] | @tsv' "$F"
+# Tokens and cost by agent
+jq -s 'map(select(.scope == "agent")) | group_by(.agent) | map({agent: .[0].agent, type: .[0].agentType, requests: length, cacheWrite: (map(.cacheWrite) | add), cost: (map(.cost // 0) | add)})' "$F"
+```
+
 ## Install
 
 ```
@@ -90,6 +116,7 @@ Set them in `/config`.
 | `warnAt` | `50` | Context percentage from which the meter uses the warning color (1 to 100). |
 | `dangerAt` | `75` | Context percentage from which the meter uses the error color (1 to 100). |
 | `language` | `en` | Language of the card and of `/context-meter`: `en` or `es`. |
+| `timeline` | `false` | Write one JSON line per request to the session's folder (see Timeline). |
 | `cacheAlert` | `true` | Color the `ctx` prefix as the main thread's prompt cache nears expiry and once it has expired. |
 | `cacheTtl` | `auto` | Prompt cache lifetime used for the countdown and for idle losses: `auto`, `5m` or `1h`. |
 
@@ -120,6 +147,8 @@ tsc -p plugins/context-meter
 `tsc` compiles against `.claude-plugin/types/`, which Claude Code writes when it loads the plugin with `--plugin-dir`. Those files are not committed, so CI runs `validate` and `test` but not `tsc`.
 
 ## Credits
+
+Several 1.1 features (the subagents' and models' tables, the hit-rate trend, the footer's TTL alert, what the cache saved, the timeline) take their ideas from [zhumengzhu/opencode-cache-hit](https://github.com/zhumengzhu/opencode-cache-hit) (MIT), a plugin for OpenCode. No code is taken from it.
 
 Inspired by [midudev/better-claude](https://github.com/midudev/better-claude) (MIT). A few small helpers are adapted from it.
 

@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (2026-11-03)
 
 ### context-meter
 
+- An optional timeline (`timeline`): one JSON line per request, main thread and agents, in the session's folder: token counts, hit rate, TTL, cost at list prices, cache losses with their cost, and tool durations; never any text.
 - Each cache loss shows what writing the lost tokens again cost (`rewrite`) and what that cost beyond reading them (`extra`), at list prices.
 - A Cache saved row: what the prompt cache saved on input at API list prices, and as a share of the input's uncached cost; negative when the writes cost more. The whole session on the main card, the agent alone on an agent's.
 - The footer's `ctx` prefix takes the warning color in the last tenth of the main thread's cache TTL (at least 30 seconds) and the error color once it has expired; `cacheAlert` turns it off.
