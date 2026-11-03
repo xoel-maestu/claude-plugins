@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### context-meter
+
+- The cache countdown and the idle time of a loss are timed from the start of each request instead of its end, as Anthropic's prompt caching docs time a cache entry. A long response no longer pushes the expiry later than it is. The first request after upgrading measures its idle time from the end of the last request recorded by 1.0.0.
+- The README states which caching rules come from Anthropic's docs and which are the plugin's own (the 1024-token noise floor), and that a compaction's summarizer request is not counted.
+
 ## 1.0.0 (2026-11-02)
 
 First public release of both plugins in the `xoel-plugins` marketplace.

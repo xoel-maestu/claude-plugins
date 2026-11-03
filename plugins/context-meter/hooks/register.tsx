@@ -250,12 +250,17 @@ let recording: Promise<void> = Promise.resolve()
 /** Queued after the recordings before it, so a compaction or a /clear lands between the right requests. */
 const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(work).then(() => {}, () => {}) }
 
-/** A main-thread response: its counts become the last request and add to the session; the cache checks it for a loss. */
-async function record ($: EngineInterface, usage: TurnUsage) {
-  const [{ startedAt, cost: spent, rateLimits }, now] = await Promise.all([$.session.usage(), $.clock.now()])
+/**
+ * A main-thread response to a request sent at `at`: its counts become the last request and add to
+ * the session; the cache checks it for a loss. The cache is timed from that start: Anthropic's
+ * prompt caching docs count an entry's lifetime from the start of the request that writes or reads
+ * it (https://platform.claude.com/docs/en/build-with-claude/prompt-caching, read 2026-11-03).
+ */
+async function record ($: EngineInterface, usage: TurnUsage, at: number) {
+  const { startedAt, cost: spent, rateLimits } = await $.session.usage()
   const before = since(await read($, ledger), startedAt)
-  await update($, ledger, state => add(since(state, startedAt), usage, now))
-  await update($, cache, state => observe(cacheSince(state, startedAt), usage, now, rateLimits.length > 0, ttlSetting))
+  await update($, ledger, state => add(since(state, startedAt), usage, at))
+  await update($, cache, state => observe(cacheSince(state, startedAt), usage, at, rateLimits.length > 0, ttlSetting))
   hasCache = true
   if (rateLimits.length > 0) isSubscriptionSeen = true
   // Rate limits say a subscription; none by a second response say an API key (the first may come
@@ -389,11 +394,14 @@ export const register: Register = (on, options) => {
   // (a subagent, a teammate, a workflow agent, or the engine's own forks: compaction, memory) and
   // counts nothing. The stream is passed on untouched; the counts are read from its result.
   // The result goes back at once: the recording runs after it, chained so steps add in order.
+  // A compaction's summarizer request is no step: it reaches only session.compact (seen in a real
+  // session, Claude Code 2.1.317), so it never counts as the session's work.
   on('turn.step', async function* ($, e, next) {
+    const sentAt = e.agentId === undefined ? await $.clock.now() : 0
     const result = yield* next(e)
     const usage = result.usage
     if (e.agentId === undefined && usage !== null) {
-      enqueue(() => record($, usage))
+      enqueue(() => record($, usage, sentAt))
     }
     return result
   })

@@ -8,7 +8,11 @@ export type TtlSetting = 'auto' | '5m' | '1h'
 
 export const FIVE_MINUTES = 5 * 60_000
 export const HOUR = 60 * 60_000
-/** A prefix of this many tokens or fewer is not counted: below the API's smallest cacheable prefix. */
+/**
+ * A prefix of this many tokens or fewer is not counted, nor a shortfall this size or smaller: a
+ * noise floor, not the API's rule. The smallest cacheable prompt is per model, 512 to 4,096 tokens
+ * (https://platform.claude.com/docs/en/build-with-claude/prompt-caching, read 2026-11-03).
+ */
 export const THRESHOLD = 1024
 /** How many losses the history keeps. */
 export const HISTORY = 10
@@ -41,8 +45,8 @@ export const observeTtl = (cache: Cache, ttl: Ttl | null): Cache =>
   ttl === null || cache.observedTtl === ttl ? cache : { ...cache, observedTtl: ttl }
 
 /**
- * A main-thread response at `at`: a loss when the previous prefix was over 1024 tokens and more than
- * 1024 of its tokens were not read back (a normal request reads the whole previous prefix, so a
+ * A main-thread response to a request sent at `at` (the cache is timed from a request's start):
+ * a loss when the previous prefix was over 1024 tokens and more than 1024 of its tokens were not read back (a normal request reads the whole previous prefix, so a
  * partial loss, such as a compaction that keeps the system prompt and tools, counts too), with the
  * first cause that holds (a compaction since, another model, a pause past the TTL, else
  * invalidated). `isSubscription` says the session has rate limits.
