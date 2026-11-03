@@ -198,6 +198,8 @@ test("a loss's cost: the lost tokens written again at the TTL in force instead o
   cache = observe(cache, u(20_000, 80_000, 'claude-sonnet-5-5'), 60_000, false, 'auto')
   expect(Math.abs(cache.losses[0]!.cost!.write5m - 80_000 * 2.4 / 1e6) < 1e-12).toBe(true)
   expect(Math.abs(cache.losses[0]!.cost!.write1h - 80_000 * 3.9 / 1e6) < 1e-12).toBe(true)
+  expect(Math.abs(cache.losses[0]!.rewrite!.write5m - 80_000 * 2.5 / 1e6) < 1e-12).toBe(true)
+  expect(Math.abs(cache.losses[0]!.rewrite!.write1h - 80_000 * 4 / 1e6) < 1e-12).toBe(true)
   // Only what was written again: lost 80,000, wrote 5,000 (a compaction's summary).
   let shorter = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, 'auto')
   shorter = observe(shorter, u(20_000, 5000, 'claude-sonnet-5-5'), 60_000, false, 'auto')

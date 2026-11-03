@@ -4,7 +4,7 @@
 
 ### context-meter
 
-- Each cache loss shows what getting the lost tokens back cost: written again at the TTL in force instead of read, at list prices.
+- Each cache loss shows what writing the lost tokens again cost (`rewrite`) and what that cost beyond reading them (`extra`), at list prices.
 - A Cache saved row: what the prompt cache saved on input at API list prices, and as a share of the input's uncached cost; negative when the writes cost more. The whole session on the main card, the agent alone on an agent's.
 - The footer's `ctx` prefix takes the warning color in the last tenth of the main thread's cache TTL (at least 30 seconds) and the error color once it has expired; `cacheAlert` turns it off.
 - The Cache hit row adds the last request's hit rate and its change against the request before it (`↑4`, `↓28`, `=`, or `(model switch)`), in every card.
