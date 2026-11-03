@@ -130,6 +130,8 @@ declare module 'claude-code' {
       cache: ContextMeterCache
       /** The time the card's cache countdown was last drawn for; written only when that line changes. */
       now: number
+      /** The main thread's cache as the footer warns of it; null with no cache. Written only when it changes. */
+      alert: 'fresh' | 'expiring' | 'expired' | null
     }
   }
 }

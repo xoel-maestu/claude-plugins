@@ -3,8 +3,8 @@ import type { AgentInfo, EngineInterface, Register, RenderNode, RenderViewport, 
 
 import type { ContextMeterFill, ContextMeterTtl } from '../types'
 
-import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
-import type { Cache, TtlSetting } from './cache'
+import { EMPTY as NO_CACHE, alertOf, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
+import type { Alert, Cache, TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
@@ -23,6 +23,8 @@ const cache = atom({ plugin: 'context-meter', key: 'cache' } as const, NO_CACHE)
 const agents = atom({ plugin: 'context-meter', key: 'agents' } as const, NO_AGENTS)
 // The time the card's countdown is drawn for: written by the tick only when the cache line changes.
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
+// The main thread's cache as the footer warns of it: written by the tick only when it changes.
+const alert = atom({ plugin: 'context-meter', key: 'alert' } as const, null as Alert | null)
 
 const SYNC_MS = 2000
 // `$.store` keys: the TTL last observed and the last subscription reading, for the next session.
@@ -50,6 +52,10 @@ const DEPTH_COLORS = ['claude', 'ide', 'merged', 'planMode'] as const
 let timer: Timer | undefined
 let ttlSetting: TtlSetting = 'auto'
 let drawnStatus = ''
+/** The alert last written; undefined until the first tick writes one (a reload may keep a stale one in $.state). */
+let drawnAlert: Alert | null | undefined
+/** Whether the footer warns of the cache's expiry (the `cacheAlert` setting). */
+let isAlertOn = true
 // Whether the cache has a request to show; while it has none the tick reads nothing.
 let hasCache = false
 // Whether the cache already counts the session as a subscription (rate limits seen).
@@ -376,9 +382,21 @@ function agentTtlOf (agentCache: Cache): { ttl: number; isTtlInferred: boolean }
  * runs on hover, so the card cannot know whether it is shown.
  */
 async function tick ($: EngineInterface) {
-  if (!hasCache) return
+  if (!hasCache) {
+    if (drawnAlert !== null) {
+      drawnAlert = null
+      await update($, alert, () => null)
+    }
+    return
+  }
   const [cached, now] = await Promise.all([read($, cache), $.clock.now()])
   const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
+  // The footer's alert, written only when it turns (the 2 s tick: at most 2 s late); none when off.
+  const turned = isAlertOn ? alertOf(cached, ttl, now) : null
+  if (turned !== drawnAlert) {
+    drawnAlert = turned
+    await update($, alert, () => turned)
+  }
   const line = cacheStatus(cached, ttl, now, 'en', isInferred)
   if (line === drawnStatus) return
   drawnStatus = line
@@ -411,10 +429,12 @@ export const register: Register = (on, options) => {
   const dangerAt = Math.max(warnSetting, dangerSetting)
   const language: Language = options.language === 'es' ? 'es' : 'en'
   ttlSetting = options.cacheTtl === '5m' || options.cacheTtl === '1h' ? options.cacheTtl : 'auto'
+  isAlertOn = options.cacheAlert !== false
   const colorFor = (percent: number) => (percent >= dangerAt ? 'error' : percent >= warnAt ? 'warning' : undefined)
 
   stopTimers()
   drawnStatus = ''
+  drawnAlert = undefined
   hasCache = false
   isSubscriptionSeen = false
   recording = Promise.resolve()
@@ -588,10 +608,11 @@ export const register: Register = (on, options) => {
   // without sub-meter's meter, and the bar needs room for sub-meter's least form too, so the row is
   // the same whichever wraps the other.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, beneath, sub, now] = await Promise.all([
+    const [shown, beneath, sub, now, warned] = await Promise.all([
       read($, fill), next(e),
       $.state.get({ plugin: 'sub-meter', key: 'reading' } as never).catch(() => undefined),
       $.clock.now(),
+      read($, alert),
     ])
     if (shown === null) return beneath
 
@@ -613,7 +634,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="row">
         <Box key="context-meter" flexDirection="row" hover={{ scope: SCOPE }}>
-          {form !== 'bare' ? <Text dimColor>ctx </Text> : null}
+          {form === 'bare' ? null
+            // The prefix warns of the main thread's cache expiry: the warning color in its last stretch, the error color once gone.
+            : isAlertOn && warned === 'expiring' ? <Text color="warning">ctx </Text>
+            : isAlertOn && warned === 'expired' ? <Text color="error">ctx </Text>
+            : <Text dimColor>ctx </Text>}
           {form === 'bar' ? <Text color={color ?? 'claude'}>{'━'.repeat(bar.filled)}</Text> : null}
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
           <Text color={color}>{text}</Text>

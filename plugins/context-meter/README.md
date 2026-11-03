@@ -40,7 +40,7 @@ The card, with the pointer on the meter:
   - An agent's **cost** is worked out from its token counts at Anthropic's published [API list prices](https://platform.claude.com/docs/en/about-claude/pricing) (read 2026-11-03), with Haiku 5.5's higher rates for prompts over 100,000 tokens and each cache write at the agent's TTL. It is not the Batch API, fast mode or `inference_geo` rates. A model the table lacks is left out, and the amount then reads `≥`.
   - An agent's **TTL** is read from its own transcript (`<session>/subagents/agent-<id>.jsonl`). Until it shows one, it is inferred (`?`): the TTL another agent's transcript last showed, else 5m. Subagents have been seen writing 5-minute entries on a subscription whose main thread writes 1-hour ones.
 
-Colors: below `warnAt` the bar uses the theme's accent color; from `warnAt` the bar and the percentage use the warning color, and from `dangerAt` the error color.
+Colors: below `warnAt` the bar uses the theme's accent color; from `warnAt` the bar and the percentage use the warning color, and from `dangerAt` the error color. The `ctx` prefix warns of the main thread's prompt cache: the warning color in the last tenth of its TTL (at least 30 seconds: the last 30 s of 5m, the last 6 minutes of 1h), the error color once it has expired, so the next message will write the cache anew. Without the prefix (a short footer) there is no alert; `cacheAlert` turns it off.
 
 When the footer is short the meter drops its bar (`ctx 5%`), then the `ctx` prefix (`5%`), then hides. It never wraps to a second line. When the band above the prompt is narrow, the card drops table columns (Uncached, then Cache write; in Agents: Model, Uncached, Cache write, Output, Requests, then Cache read) and shortens its text; numbers and words are never cut. An agent's name longer than 24 characters ends in `…`.
 
@@ -89,6 +89,7 @@ Set them in `/config`.
 | `warnAt` | `50` | Context percentage from which the meter uses the warning color (1 to 100). |
 | `dangerAt` | `75` | Context percentage from which the meter uses the error color (1 to 100). |
 | `language` | `en` | Language of the card and of `/context-meter`: `en` or `es`. |
+| `cacheAlert` | `true` | Color the `ctx` prefix as the main thread's prompt cache nears expiry and once it has expired. |
 | `cacheTtl` | `auto` | Prompt cache lifetime used for the countdown and for idle losses: `auto`, `5m` or `1h`. |
 
 With `cacheTtl` set to `auto`, the plugin reads the TTL of the last cache write from the session transcript. Until it has seen one it infers it (1h on a subscription, 5m otherwise) and marks it with `?`, as in `TTL 1h?`.

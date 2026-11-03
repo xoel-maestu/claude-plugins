@@ -2,7 +2,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TurnUsage } from 'claude-code'
 
-import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, cleared, markCompact, observe, observeTtl, readSubscription, seed, since, statusOf, ttlInfo, ttlOf } from './cache'
+import { EMPTY, FIVE_MINUTES, HISTORY, HOUR, alertOf, cleared, expiringFor, markCompact, observe, observeTtl, readSubscription, seed, since, statusOf, ttlInfo, ttlOf } from './cache'
 import type { Cache } from './cache'
 
 const MIN = 60_000
@@ -174,4 +174,18 @@ test('the observed TTL judges an idle loss: 6 minutes under an observed 1h is no
   const cache = after(100_000, 0, 'model-a', { observedTtl: '1h' })
   expect(observe(cache, usage(0, 100_000), 6 * MIN, false, 'auto').losses[0]?.cause).toBe('invalidated')
   expect(observe({ ...cache, observedTtl: '5m', isSubscription: true }, usage(0, 100_000), 6 * MIN, true, 'auto').losses[0]?.cause).toBe('expired')
+})
+
+test('the footer alert: fresh, then expiring in the last tenth of the TTL (at least 30 s), then expired', () => {
+  const cache = { ...EMPTY, last: { prefix: 50_000, model: 'model-a', at: 0 } }
+  const FIVE = 5 * 60_000
+  expect(expiringFor(FIVE)).toBe(30_000)
+  expect(expiringFor(60 * 60_000)).toBe(6 * 60_000)
+  expect(alertOf(cache, FIVE, FIVE - 30_001)).toBe('fresh')
+  expect(alertOf(cache, FIVE, FIVE - 30_000)).toBe('expiring')
+  expect(alertOf(cache, FIVE, FIVE)).toBe('expired')
+  expect(alertOf(EMPTY, FIVE, 0)).toBeNull()
+  expect(alertOf({ ...cache, last: { ...cache.last, prefix: 0 } }, FIVE, 0)).toBeNull()
+  // A clock behind the last request reads it as just made.
+  expect(alertOf(cache, FIVE, -10_000)).toBe('fresh')
 })

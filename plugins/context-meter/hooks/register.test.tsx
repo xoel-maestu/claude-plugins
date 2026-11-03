@@ -120,6 +120,79 @@ test('shows the fill as a bar, the bar in the theme claude color below warnAt, t
   expect(await ui.find({ key: 'context-meter' })).toBeDefined()
 })
 
+test("the ctx prefix warns of the main thread's cache: the warning color in the TTL's last tenth (30 s of 5m), the error color once expired; the row keeps its width", async ($, on) => {
+  const w = world(on, fill(30))
+  await startSession($)
+  await measure($, 30)
+  const ui = await footer($)
+  const prefix = async () => ((await ui.find({ type: 'Text', text: 'ctx ' })) as { props?: Record<string, unknown> }).props
+  // No cache yet: dim.
+  expect(await prefix()).toMatchObject({ dimColor: true })
+  await respond($, w, counts(5, 0, 50_000, 10))
+  const before = await row(ui)
+  await w.clock.advance(4 * MIN)
+  expect(await prefix()).toMatchObject({ dimColor: true })
+  await w.clock.advance(32_000)
+  expect(await prefix()).toMatchObject({ color: 'warning' })
+  expect(await row(ui)).toEqual(before)
+  await w.clock.advance(30_000)
+  expect(await prefix()).toMatchObject({ color: 'error' })
+  // A new request: alive again.
+  await respond($, w, counts(5, 50_000, 0, 10))
+  await w.clock.advance(2000)
+  expect(await prefix()).toMatchObject({ dimColor: true })
+})
+
+test('the alert clears with /clear; a stale one kept in $.state is replaced at the first tick', async ($, on) => {
+  // $.state holds 'expired' from before a reload, until the plugin writes the alert.
+  const written: unknown[] = []
+  on('state.get', ($, e, next) => (e as { key: string }).key === 'alert' && written.length === 0 ? { value: { value: 'expired', version: 1 } } as never : next(e))
+  on('state.set', ($, e, next) => {
+    if ((e as { key: string }).key === 'alert') written.push((e as { value?: unknown }).value)
+    return next(e)
+  })
+  const w = world(on, fill(30))
+  await startSession($)
+  await measure($, 30)
+  const prefixOf = async (ui: Awaited<ReturnType<typeof footer>>) => ((await ui.find({ type: 'Text', text: 'ctx ' })) as { props?: Record<string, unknown> }).props
+  expect(await prefixOf(await footer($))).toMatchObject({ color: 'error' })
+  // With no cache now, the first tick writes none.
+  await w.clock.advance(2000)
+  expect(written.length > 0 && written.every(value => value === null)).toBe(true)
+  expect(await prefixOf(await footer($))).toMatchObject({ dimColor: true })
+  const ui = await footer($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(6 * MIN)
+  expect(await prefixOf(ui)).toMatchObject({ color: 'error' })
+  await $.session.end({ reason: 'clear' } as never)
+  await runCommand($)
+  await w.clock.advance(2000)
+  expect(await prefixOf(ui)).toMatchObject({ dimColor: true })
+})
+
+test('a 1h TTL warns in its last 6 minutes; the short form warns too', { options: { cacheTtl: '1h' } }, async ($, on) => {
+  const w = world(on, fill(30))
+  await startSession($)
+  await measure($, 30)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(53 * MIN)
+  const narrow = await footer($, 40)
+  const prefix = async () => ((await narrow.find({ type: 'Text', text: 'ctx ' })) as { props?: Record<string, unknown> } | undefined)?.props
+  expect(await prefix()).toMatchObject({ dimColor: true })
+  await w.clock.advance(MIN + 2000)
+  expect(await prefix()).toMatchObject({ color: 'warning' })
+})
+
+test('with cacheAlert off the prefix stays dim', { options: { cacheAlert: false } }, async ($, on) => {
+  const w = world(on, fill(30))
+  await startSession($)
+  await measure($, 30)
+  const ui = await footer($)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  await w.clock.advance(6 * MIN)
+  expect(await ui.find({ type: 'Text', text: 'ctx ' })).toMatchObject({ props: { dimColor: true } })
+})
+
 test('warning from 50%, error from 75%', async ($, on) => {
   world(on, fill(10))
   await startSession($)
