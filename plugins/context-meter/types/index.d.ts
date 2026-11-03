@@ -29,6 +29,8 @@ export type ContextMeterCounts = {
 export type ContextMeterLedger = {
   startedAt?: number
   last?: ContextMeterCounts & { model: string; at: number }
+  /** The request before the last, for the hit rate's trend. */
+  previous?: ContextMeterCounts & { model: string; at: number }
   total: ContextMeterCounts
   requests: number
   /** The counts and requests by the model that answered; absent in a ledger written before it was kept. */
@@ -55,6 +57,8 @@ export type ContextMeterAgents = {
     requests: number
     at: number
     last: ContextMeterCounts
+    /** The request before the last, and its model, for the hit rate's trend. */
+    previous?: ContextMeterCounts & { model: string }
     cache: ContextMeterCache
     cost: { base: number; write5m: number; write1h: number }
     isUnpriced: boolean

@@ -22,6 +22,7 @@ export function add (state: Ledger, usage: TurnUsage, at: number): Ledger {
   return {
     ...state,
     last: { ...counts, model: usage.model, at },
+    ...(state.last === undefined ? {} : { previous: state.last }),
     total: {
       input: total.input + counts.input,
       output: total.output + counts.output,

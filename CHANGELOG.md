@@ -4,6 +4,7 @@
 
 ### context-meter
 
+- The Cache hit row adds the last request's hit rate and its change against the request before it (`↑4`, `↓28`, `=`, or `(model switch)`), in every card.
 - An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache read, cache write, uncached, output, cache hit, model), the total over every subagent, and the main thread and the subagents together. Shown once a subagent has answered; the engine's own forks are left out.
 - An agent's own card, the same as the main thread's: click its row (or open its transcript from the tasks list) to see its context, last request, session, cache hit, cost at API list prices, prompt cache TTL and expiry, cache losses, and the agents it spawned; `/context-meter <n|name>` prints it. A path at the top goes back up. Its TTL comes from its own transcript.
 - A Models section in each card: a row per model that answered in that loop or under it, with its cost at API list prices, shown when there is more than one.
