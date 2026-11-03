@@ -28,13 +28,14 @@ export type LastResponse = { ttl: ContextMeterTtl | null; cacheRead: number; cac
 const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
 
 /**
- * The last main-thread response of a session transcript (JSONL), null when there is none: the TTL
+ * The last main-thread response of a session transcript (JSONL), or with `agentId` the last response
+ * of that agent in its own transcript (`<session>/subagents/agent-<id>.jsonl`), null when there is none: the TTL
  * it wrote its cache with (`1h` when it wrote 1h tokens, `5m` when it wrote 5m tokens, null when it
  * wrote none: a pure read) and its cache read and write counts. Read from the end, line by line; a
  * line that is not JSON, not an assistant entry, a sidechain's (a subagent's) or without
  * `usage.cache_creation` is skipped.
  */
-export function lastResponse (text: string): LastResponse | null {
+export function lastResponse (text: string, agentId?: string): LastResponse | null {
   let end = text.length
   while (end > 0) {
     const start = text.lastIndexOf('\n', end - 1) + 1
@@ -49,7 +50,9 @@ export function lastResponse (text: string): LastResponse | null {
       continue
     }
     if (entry === null || typeof entry !== 'object' || entry.type !== 'assistant') continue
-    if (entry.isSidechain === true || (typeof entry.agentId === 'string' && entry.agentId !== '')) continue
+    const isAgents = entry.isSidechain === true || (typeof entry.agentId === 'string' && entry.agentId !== '')
+    // The main transcript: the main thread's entries; an agent's own transcript: that agent's.
+    if (agentId === undefined ? isAgents : entry.agentId !== agentId) continue
     const usage = entry.message?.usage
     const creation = usage?.cache_creation
     if (creation === undefined || creation === null || typeof creation !== 'object') continue
@@ -61,3 +64,9 @@ export function lastResponse (text: string): LastResponse | null {
 
 /** The TTL the last main-thread response wrote its cache with; null for a pure read or no response (see lastResponse). */
 export const lastTtl = (text: string): ContextMeterTtl | null => lastResponse(text)?.ttl ?? null
+
+/** An agent's own transcript, beside the session's: `<dir>/<session>.jsonl` → `<dir>/<session>/subagents/agent-<id>.jsonl`. */
+export const agentTranscriptOf = (sessionPath: string, agentId: string): string | undefined =>
+  sessionPath.endsWith('.jsonl') && /^[A-Za-z0-9_-]+$/.test(agentId)
+    ? `${sessionPath.slice(0, -'.jsonl'.length)}/subagents/agent-${agentId}.jsonl`
+    : undefined

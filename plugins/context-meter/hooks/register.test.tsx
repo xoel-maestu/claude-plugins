@@ -277,8 +277,11 @@ function placedIn (node: unknown): Node | undefined {
 async function cardIn (ui: { drawn: () => Promise<unknown> }) {
   const holder = placedIn(await ui.drawn())
   const box = holder?.children?.[0] as Node | undefined
+  // A Button draws its label (`plain`: the label alone, as the row lays it out).
   const text = (node: unknown): string =>
-    typeof node === 'string' ? node : ((node as Node | null)?.children ?? []).map(text).join('')
+    typeof node === 'string' ? node
+      : (node as Node | null)?.type === 'Button' ? String(((node as Node).props as { label?: unknown } | undefined)?.label ?? '')
+      : ((node as Node | null)?.children ?? []).map(text).join('')
   return { holder, box, rows: (box?.children ?? []).map(text) }
 }
 
@@ -466,7 +469,7 @@ test('each main-thread response is the last request and adds to the session', as
     'Last request   105.2k   104k         1k            200        500',
     'Session        210.2k   204k         5k            1.2k       2.5k',
     'Cache hit      97% of input read from cache',
-    'Cost           ≈ $0.80 at list prices (session, all agents)',
+    'Cost           ≈ $0.8000 at list prices (session, all agents)',
   ])
 })
 
@@ -589,6 +592,141 @@ test('an agent once named keeps counting after the list drops it', async ($, on)
   w.live.agentList = []
   await respond($, w, counts(1, 0, 0, 1), 'a1')
   expect((await agentLines($))[1]).toMatch(/^Explore +2 /)
+})
+
+const twoAgents = (w: ReturnType<typeof world>) => {
+  w.live.agentList = [
+    { id: 'a1', type: 'Explore', description: 'Count files', status: 'running' },
+    { id: 'a2', type: 'general-purpose', name: 'reviewer', description: 'Review', status: 'running' },
+  ]
+}
+const feedAgents = async ($: Engine, w: ReturnType<typeof world>) => {
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  await w.clock.advance(MIN)
+  await respond($, w, counts(2, 0, 30_000, 148, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(10, 0, 9000, 50, 'claude-sonnet-5-5'), 'a2')
+}
+const run = ($: Engine, args: string) =>
+  $.command.run({ command: 'context-meter', args, origin: { kind: 'composer' } } as never)
+
+test("/context-meter <n> or <name>: that agent's card, with its own rows, cost and cache", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await feedAgents($, w)
+  const lines = ((await run($, '2')).text ?? '').split('\n')
+  expect(lines.slice(0, 8)).toEqual([
+    'Agent   Count files · haiku 5.5',
+    '               Input   Cache read   Cache write   Uncached   Output',
+    'Last request   30k     0            30k           2          148',
+    'Session        47.6k   4.8k         42.8k         4          314',
+    'Cache hit      10% of input read from cache',
+    // Haiku 5.5 up to 100k: (4 × 0.10 + 4,846 × 0.01 + 314 × 0.50 + 42,795 × 0.125) / 1e6 = $0.00556.
+    'Cost           ≈ $0.0056 at API list prices, from its token counts',
+    `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
+    `Cache losses   ${clockTime(MIN)}  −17.6k  invalidated (prompt or tools changed)`,
+  ])
+  expect(((await run($, 'review')).text ?? '').split('\n')[0]).toBe('Agent   reviewer · sonnet 5.5')
+  expect((await run($, 'nobody')).text).toBe('No agent of this session matches "nobody".')
+})
+
+test('a press on an agent row shows its card; ‹ Main goes back; a transcript in view shows its agent', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await measure($, 62)
+  await feedAgents($, w)
+  await runCommand($)
+  const ui = await band($, 115)
+  const first = async () => (await cardIn(ui)).rows[0]!.trim()
+  expect(await first()).toMatch(/^Context /)
+  await ui.press({ key: 'agent:a1' })
+  expect(await first()).toBe('‹ Main   Agent   Count files · haiku 5.5')
+  await ui.press({ key: 'main' })
+  expect(await first()).toMatch(/^Context /)
+  const viewing = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
+    viewport: { columns: 120, rows: 30 },
+  })
+  expect((await cardIn(viewing)).rows[0]!.trim()).toBe('‹ Main   Agent   reviewer · sonnet 5.5')
+})
+
+test("an agent's TTL comes from its own transcript beside the session's", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  const AGENT = '/synthetic/session/subagents/agent-a1.jsonl'
+  const lines: string[] = []
+  const text = () => lines.map(line => line + '\n').join('')
+  on('fs.stat', ($, e) => ({ value: { kind: e.path === AGENT ? 'file' : 'other', size: e.path === AGENT ? text().length : 0, mtimeMs: 0, isLink: false } }) as never)
+  on('fs.read', () => ({ value: text() }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: text(), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) as never)
+  on('classic.SessionStart', () => ({}))
+  on('classic.SubagentStop', () => ({}))
+  await startSession($)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/synthetic/session.jsonl' } as never)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  // A stop before the agent has a row reads nothing yet.
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1', agent_type: 'Explore', agent_transcript_path: AGENT } as never)
+  // The step comes before its entry is written; the stop then reads it.
+  await respond($, w, counts(2, 0, 30_000, 10, 'claude-haiku-5-5'), 'a1')
+  expect(((await run($, '1')).text ?? '').split('\n').find(line => line.startsWith('Cache  '))).toMatch(/TTL 5m\?\)$/)
+  lines.push(JSON.stringify({ type: 'assistant', isSidechain: true, agentId: 'a1', message: { usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 30_000, cache_creation: { ephemeral_1h_input_tokens: 30_000 } } } }))
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1', agent_type: 'Explore', agent_transcript_path: AGENT } as never)
+  const cacheRow = ((await run($, '1')).text ?? '').split('\n').find(line => line.startsWith('Cache  '))
+  expect(cacheRow).toMatch(/TTL 1h\)$/)
+})
+
+test("an agent's card keeps Overall the main thread's and every agent's; an agent off the price table reads ≥", async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await feedAgents($, w)
+  await respond($, w, counts(1, 1, 1, 1, 'unknown-model'), 'a2')
+  const lines = ((await run($, '1')).text ?? '').split('\n')
+  expect(lines.find(line => line.startsWith('Overall'))).toBe(((await run($, '')).text ?? '').split('\n').find(line => line.startsWith('Overall')))
+  expect(lines.find(line => line.startsWith('Cost'))).toMatch(/^Cost +≥ \$/)
+})
+
+test('a transcript in view of an agent the card has no row for shows the main card; /clear drops the pick', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await measure($, 62)
+  await feedAgents($, w)
+  await runCommand($)
+  const mountWith = (view: { agentId?: string }) => $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view },
+    viewport: { columns: 120, rows: 30 },
+  })
+  expect((await cardIn(await mountWith({ agentId: 'nobody' }))).rows[0]!.trim()).toMatch(/^Context /)
+  const ui = await band($, 115)
+  await ui.press({ key: 'agent:a1' })
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^‹ Main/)
+  await $.session.end({ reason: 'clear' } as never)
+  await runCommand($)
+  expect((await cardIn(await band($, 115))).rows[0]!.trim()).toMatch(/^Context /)
+})
+
+test('a press while an agent transcript is in view moves the view', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  const views: unknown[] = []
+  on('ui.view', ($, e) => { views.push(e); return { value: {} } as never })
+  await startSession($)
+  await measure($, 62)
+  await feedAgents($, w)
+  await runCommand($)
+  const ui = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
+    viewport: { columns: 120, rows: 30 },
+  })
+  await ui.press({ key: 'main' })
+  await ui.press({ key: 'agent:a1' })
+  expect(views).toEqual([{}, { agentId: 'a1' }])
 })
 
 test('no subagent: no Agents section', async ($, on) => {
@@ -1137,7 +1275,7 @@ test('/clear keeps the observed TTL and the subscription reading', async ($, on)
   w.live.rateLimits = []
   await respond($, w, counts(5, 0, 50_000, 10))
   expect((await cacheLines($))[0]).toMatch(/TTL 5m\)$/)
-  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.0040 at API list prices (not billed on your plan)')
 })
 
 test('a new session starts from the stored TTL (inferred) and subscription', async ($, on) => {
@@ -1151,7 +1289,7 @@ test('a new session starts from the stored TTL (inferred) and subscription', asy
   await respond($, w, counts(5, 0, 50_000, 10))
   // No rate limits yet: the stored reading stands; the stored TTL is the inference.
   expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
-  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.0040 at API list prices (not billed on your plan)')
   // This session's transcript confirms a TTL; it is stored.
   file.lines.push(entry(800, 0))
   await stop($)
@@ -1191,7 +1329,7 @@ test('on a subscription the cost reads at API list prices, not billed', async ($
   w.live.cost = { usd: 0.004 }
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
-  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
+  expect((await tokenLines($)).at(-1)).toBe('Cost           ≈ $0.0040 at API list prices (not billed on your plan)')
 })
 
 test('the subscription cost row in Spanish', { options: { language: 'es' } }, async ($, on) => {
@@ -1200,7 +1338,7 @@ test('the subscription cost row in Spanish', { options: { language: 'es' } }, as
   w.live.cost = { usd: 0.004 }
   await startSession($)
   await respond($, w, counts(5, 0, 50_000, 10))
-  expect((await tokenLines($)).at(-1)).toBe('Coste               ≈ $0.004 a precio de lista de la API (no se factura en tu plan)')
+  expect((await tokenLines($)).at(-1)).toBe('Coste               ≈ $0.0040 a precio de lista de la API (no se factura en tu plan)')
 })
 
 test('the transcript written after Stop is read on the next resync: the band card shows TTL 1h without ?', async ($, on) => {

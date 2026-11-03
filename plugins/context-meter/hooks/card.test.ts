@@ -148,8 +148,8 @@ test('the cost row takes its short tail where the full one does not fit, else th
   expect(trimmed(cardOf(view, 'en', 47)).at(-1)).toBe('Cost           ≈ $1234.50 (estimate)')
   expect(trimmed(cardOf(view, 'es', 60)).at(-1)).toBe('Coste               ≈ $1234.50 (estimación)')
   const subscription = { ...view, cost: 0.004, cache: { ...EMPTY, isSubscription: true } }
-  expect(trimmed(cardOf(subscription, 'en', 47)).at(-1)).toBe('Cost           ≈ $0.004 (not billed)')
-  expect(trimmed(cardOf(subscription, 'es', 60)).at(-1)).toBe('Coste               ≈ $0.004 (no se factura)')
+  expect(trimmed(cardOf(subscription, 'en', 47)).at(-1)).toBe('Cost           ≈ $0.0040 (not billed)')
+  expect(trimmed(cardOf(subscription, 'es', 60)).at(-1)).toBe('Coste               ≈ $0.0040 (no se factura)')
   // A small table at its narrowest (42 inside the border) and a huge amount: the tail would not fit
   // even short, so the amount stands alone, no word cut.
   const one = { input: 1, cacheRead: 1, cacheWrite: 1, output: 1 }
@@ -161,15 +161,16 @@ test('the cost row takes its short tail where the full one does not fit, else th
 
 test('the cost row on a subscription: at API list prices, not billed on the plan', () => {
   const view = { ...WITH_TOKENS, cost: 0.004, cache: { ...EMPTY, isSubscription: true } }
-  expect(trimmed(cardOf(view, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.004 at API list prices (not billed on your plan)')
-  expect(trimmed(cardOf(view, 'es', 115)).at(-1)).toBe('Coste               ≈ $0.004 a precio de lista de la API (no se factura en tu plan)')
+  expect(trimmed(cardOf(view, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.0040 at API list prices (not billed on your plan)')
+  expect(trimmed(cardOf(view, 'es', 115)).at(-1)).toBe('Coste               ≈ $0.0040 a precio de lista de la API (no se factura en tu plan)')
   // The tail is dim, the label and the amount plain.
   expect(cardOf(view, 'en', 115)!.rows.at(-1)!.map(cell => cell.tone).slice(0, 3)).toEqual(['plain', 'plain', 'dim'])
 })
 
 test('amounts: two decimals from a cent, sub-cent from the first significant digit', () => {
-  expect([4.123, 0.01, 0.0042, 0.004, 0.0004, 0.00999].map(usdText)).toEqual(['$4.12', '$0.01', '$0.004', '$0.004', '$0.0004', '$0.01'])
-  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.004 at list prices (session, all agents)')
+  expect([4.123, 0.999_99, 0.1707, 0.01, 0.0042, 0.000_04, 0.000_099_99].map(usdText))
+    .toEqual(['$4.12', '$1.00', '$0.1707', '$0.0100', '$0.0042', '$0.00004', '$0.0001'])
+  expect(trimmed(cardOf({ ...WITH_TOKENS, cost: 0.004 }, 'en', 115)).at(-1)).toBe('Cost           ≈ $0.0040 at list prices (session, all agents)')
 })
 
 test('a cost of zero (a subscription) , none or a non-finite one gives no cost row', () => {

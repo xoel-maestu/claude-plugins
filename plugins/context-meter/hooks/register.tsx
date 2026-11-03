@@ -1,17 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage, SessionCost, Timer, TurnUsage } from 'claude-code'
 
-import type { ContextMeterFill } from '../types'
+import type { ContextMeterFill, ContextMeterTtl } from '../types'
 
 import { EMPTY as NO_CACHE, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
-import type { TtlSetting } from './cache'
+import type { Cache, TtlSetting } from './cache'
 import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
-import { EMPTY as NO_AGENTS, add as addAgent, since as agentsSince } from './agents'
+import { EMPTY as NO_AGENTS, add as addAgent, seeTtl, since as agentsSince } from './agents'
 import { EMPTY, add, since } from './ledger'
-import { MAX_READ, TAIL, completeLines, lastResponse } from './transcript'
+import { MAX_READ, TAIL, agentTranscriptOf, completeLines, lastResponse } from './transcript'
 
 const fill = atom({ plugin: 'context-meter', key: 'fill' } as const, null as ContextMeterFill)
 const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, null as number | null)
@@ -27,6 +27,8 @@ const SYNC_MS = 2000
 // `$.store` keys: the TTL last observed and the last subscription reading, for the next session.
 const STORED_TTL = 'lastTtl'
 const STORED_SUBSCRIPTION = 'isSubscription'
+// The TTL a subagent's transcript last showed: the inference for the next session's agents.
+const STORED_AGENT_TTL = 'lastAgentTtl'
 const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
@@ -245,12 +247,22 @@ async function seedFromStore ($: EngineInterface) {
   ])
   const cached = await read($, cache)
   if (seed(cached, { ttl, isSubscription }) !== cached) await update($, cache, state => seed(state, { ttl, isSubscription }))
+  const agentTtl = await $.store.get(STORED_AGENT_TTL).catch(() => undefined)
+  if (agentTtl === '5m' || agentTtl === '1h') {
+    const stored: ContextMeterTtl = agentTtl
+    const others = await read($, agents)
+    if (others.lastTtl === undefined) await update($, agents, state => (state.lastTtl === undefined ? { ...state, lastTtl: stored } : state))
+  }
 }
 
 /** The recordings of main-thread responses, one after another. */
 let recording: Promise<void> = Promise.resolve()
 /** The agents `$.agent.list()` has named, by id: read once each. */
 const seenAgents = new Map<string, AgentInfo>()
+/** The size each agent's transcript had when last read. */
+const agentTranscriptSizes = new Map<string, number>()
+/** The agent the card shows, picked with a click on its row; undefined: the main thread. */
+let selectedId: string | undefined
 
 /** Queued after the recordings before it, so a compaction or a /clear lands between the right requests. */
 const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(work).then(() => {}, () => {}) }
@@ -279,7 +291,7 @@ async function record ($: EngineInterface, usage: TurnUsage, at: number) {
  * loop. A loop it does not name is one of the engine's own forks (memory, a summarizer), not counted.
  */
 async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsage, at: number) {
-  const { startedAt } = await $.session.usage()
+  const [{ startedAt, rateLimits }, main] = await Promise.all([$.session.usage(), read($, cache)])
   // The list is read only for an agent not seen yet: a known one stays counted once it is done.
   let info = seenAgents.get(agentId)
   if (info === undefined) {
@@ -287,7 +299,33 @@ async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsag
     if (info === undefined) return
     seenAgents.set(agentId, info)
   }
-  await update($, agents, state => addAgent(agentsSince(state, startedAt), info, usage, at))
+  const isSubscription = rateLimits.length > 0 || main.isSubscription
+  const known = info
+  await update($, agents, state => addAgent(agentsSince(state, startedAt), known, usage, at, isSubscription, ttlSetting))
+  const path = transcriptPath === undefined ? undefined : agentTranscriptOf(transcriptPath, agentId)
+  if (path !== undefined) await readAgentTranscript($, agentId, path)
+}
+
+/**
+ * The TTL an agent's last cache write used, from the end of its own transcript: read after its
+ * responses and when it stops, each time only when the file's size changed. The host may write a
+ * response there after its step, so a step reads the one before it; the stop reads the last.
+ */
+async function readAgentTranscript ($: EngineInterface, agentId: string, path: string) {
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined || stat.kind !== 'file' || stat.size === agentTranscriptSizes.get(agentId)) return
+  const before = await read($, agents)
+  // An agent with no row yet is read again once it has one.
+  if (!before.agents.some(agent => agent.id === agentId)) return
+  const text = await readTail($, path, stat.size)
+  if (text === undefined) return
+  agentTranscriptSizes.set(agentId, stat.size)
+  const ttl = lastResponse(text, agentId)?.ttl ?? null
+  if (ttl === null) return
+  const after = seeTtl(before, agentId, ttl)
+  if (after === before) return
+  await update($, agents, state => seeTtl(state, agentId, ttl))
+  if (before.lastTtl !== ttl) await $.store.set(STORED_AGENT_TTL, ttl).catch(() => {})
 }
 
 /**
@@ -301,12 +339,26 @@ function seeRateLimits ($: EngineInterface, rateLimits: readonly unknown[]) {
 }
 
 /** Everything the card shows; `now` is the time the countdown is drawn for, the tick's unless given. */
-async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
+async function viewOf ($: EngineInterface, now?: number, agentId?: string): Promise<CardView> {
   const [shown, threshold, counted, spent, cached, tick, others] = await Promise.all([
     read($, fill), read($, compactAt), read($, ledger), read($, cost), read($, cache), read($, drawnAt), read($, agents),
   ])
   const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
-  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others }
+  // A row written by an earlier build, without its own cache and cost, is not shown as a card.
+  const picked = agentId === undefined ? undefined
+    : others.agents.find(agent => agent.id === agentId && agent.cache !== undefined && agent.cost !== undefined)
+  const selected = picked === undefined ? undefined : { agent: picked, ...agentTtlOf(picked.cache) }
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others, selected }
+}
+
+/** What `/context-meter <agent>` says when no agent of the session matches. */
+const noAgentText = (wanted: string, language: Language) =>
+  language === 'es' ? `Ningún agente de esta sesión coincide con «${wanted}».` : `No agent of this session matches "${wanted}".`
+
+/** An agent's cache TTL in force: the setting, else what its transcript showed, else the inference its cache holds. */
+function agentTtlOf (agentCache: Cache): { ttl: number; isTtlInferred: boolean } {
+  const { ttl, isInferred } = ttlInfo(agentCache, ttlSetting)
+  return { ttl, isTtlInferred: isInferred }
 }
 
 /**
@@ -365,6 +417,8 @@ export const register: Register = (on, options) => {
   hintWidth = 0
   transcriptPath = undefined
   seenAgents.clear()
+  agentTranscriptSizes.clear()
+  selectedId = undefined
   transcriptSize = -1
   isTranscriptDue = false
 
@@ -393,7 +447,8 @@ export const register: Register = (on, options) => {
       enqueue(async () => {
         // The counts start over after the responses already queued; the next takes the new session start.
         await update($, ledger, () => EMPTY)
-        await update($, agents, () => NO_AGENTS)
+        await update($, agents, state => ({ ...NO_AGENTS, ...(state.lastTtl === undefined ? {} : { lastTtl: state.lastTtl }) }))
+        selectedId = undefined
         const now = await $.clock.now()
         // The TTL setting and the billing do not change with /clear: those readings are kept.
         await update($, cache, state => cleared(now, state))
@@ -441,6 +496,15 @@ export const register: Register = (on, options) => {
     seeTranscript(e)
     return next(e)
   })
+  // A subagent's end: its transcript holds its last response, so its TTL is read once more.
+  on('classic.SubagentStop', async ($, e, next) => {
+    const agentId = e.agent_id
+    const path = e.agent_transcript_path
+    if (typeof agentId === 'string' && typeof path === 'string' && path !== '') {
+      enqueue(() => readAgentTranscript($, agentId, path))
+    }
+    return next(e)
+  })
   on('classic.Stop', async ($, e, next) => {
     seeTranscript(e)
     if (e.agent_id === undefined) {
@@ -469,14 +533,26 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  on('command.run', { command: 'context-meter' }, async $ => {
+  on('command.run', { command: 'context-meter' }, async ($, e) => {
     // The responses already in are counted before the card is printed.
     await recording
     const usage = await $.session.usage()
     await keepSession($, usage.startedAt)
     await showCost($, usage.cost)
     await sync($, usage.context, true)
-    return { text: cardText(await viewOf($, await $.clock.now()), language) }
+    // `/context-meter 2` or `/context-meter reviewer`: that agent's card (the number as the card lists them).
+    const wanted = String((e as { args?: unknown }).args ?? '').trim()
+    let agentId: string | undefined
+    if (wanted !== '') {
+      const listed = (await read($, agents)).agents
+      const byNumber = /^\d+$/.test(wanted) ? listed[Number(wanted) - 1] : undefined
+      const byName = listed.find(agent => agent.label.toLowerCase() === wanted.toLowerCase()) ??
+        listed.find(agent => agent.label.toLowerCase().startsWith(wanted.toLowerCase()))
+      const found = byNumber ?? byName
+      if (found === undefined) return { text: noAgentText(wanted, language) }
+      agentId = found.id
+    }
+    return { text: cardText(await viewOf($, await $.clock.now(), agentId), language) }
   })
 
   // The hint line beside the mode label: its width says how much of the row is left. Drawn as it is.
@@ -544,14 +620,27 @@ export const register: Register = (on, options) => {
   // the band holds. Hidden until the meter's group is hovered. With nothing to show, the band is
   // left as it was, so it gets no row of its own.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const [view, beneath] = await Promise.all([viewOf($), next(e)])
+    // The agent whose transcript is in view, else the one picked on the card, else the main thread.
+    const [view, beneath] = await Promise.all([viewOf($, undefined, e.props.view?.agentId ?? selectedId), next(e)])
     const shown = view.fill
     if (shown === null || e.props.hasSurvey) return beneath
     const card = cardOf(view, language, e.props.bodyColumns)
     if (card === null) return beneath
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const color = colorFor(shown.percent)
+    // While an agent's transcript is in view the card follows the view, so a press moves the view;
+    // otherwise it picks what the card shows.
+    const viewed = e.props.view?.agentId
+    const press = (target: string) => () => {
+      const id = target === 'main' ? undefined : target.slice('agent:'.length)
+      if (viewed !== undefined) {
+        void $.ui.view(id === undefined ? {} : { agentId: id }).catch(() => undefined)
+        return
+      }
+      selectedId = id
+      $.ui.invalidate('ui.render')
+    }
     const toneProps = (tone: Tone) =>
       tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? 'claude' } : tone === 'dim' ? { dimColor: true } : {}
 
@@ -574,7 +663,9 @@ export const register: Register = (on, options) => {
             {card.rows.map(cells => (
               <Box flexDirection="row">
                 <Text> </Text>
-                {cells.map(cell => <Text {...toneProps(cell.tone)}>{cell.text}</Text>)}
+                {cells.map(cell => cell.press === undefined
+                  ? <Text {...toneProps(cell.tone)}>{cell.text}</Text>
+                  : <Button key={cell.press} plain onPress={press(cell.press)}>{cell.text}</Button>)}
                 <Text> </Text>
               </Box>
             ))}

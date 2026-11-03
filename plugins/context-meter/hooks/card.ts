@@ -1,12 +1,13 @@
 import type { ContextMeterFill } from '../types'
 
-import { KEPT, modelName, withMain } from './agents'
-import type { Agents } from './agents'
+import { KEPT, modelName, totalOf, withMain } from './agents'
+import type { Agent, Agents } from './agents'
 import { FIVE_MINUTES, HISTORY, HOUR, statusOf } from './cache'
 import type { Cache, Loss } from './cache'
 import { split } from './fit'
 import { hitRate } from './ledger'
 import type { Counts, Ledger } from './ledger'
+import { costAt } from './pricing'
 
 export type Language = 'en' | 'es'
 
@@ -54,7 +55,7 @@ type Words = {
   hitText: string
   cost: string
   /** After the amount: on a subscription it is not billed, otherwise it is an estimate. */
-  costTail: Record<'subscription' | 'list', { full: string; short: string }>
+  costTail: Record<'subscription' | 'list' | 'agent', { full: string; short: string }>
   columns: Record<Column, string>
   cache: string
   losses: string
@@ -71,6 +72,8 @@ type Words = {
   agentColumns: Record<AgentColumn, string>
   allAgents: string
   overall: string
+  agent: string
+  main: string
 }
 
 const WORDS: Record<Language, Words> = {
@@ -86,6 +89,7 @@ const WORDS: Record<Language, Words> = {
     costTail: {
       subscription: { full: 'at API list prices (not billed on your plan)', short: '(not billed)' },
       list: { full: 'at list prices (session, all agents)', short: '(estimate)' },
+      agent: { full: 'at API list prices, from its token counts', short: '(estimate)' },
     },
     columns: { input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output' },
     cache: 'Cache',
@@ -102,6 +106,8 @@ const WORDS: Record<Language, Words> = {
     agentColumns: { requests: 'Requests', input: 'Input', cacheRead: 'Cache read', cacheWrite: 'Cache write', uncached: 'Uncached', output: 'Output', hit: 'Cache hit', model: 'Model' },
     allAgents: 'All agents',
     overall: 'Overall',
+    agent: 'Agent',
+    main: '‹ Main',
   },
   es: {
     context: 'Contexto',
@@ -115,6 +121,7 @@ const WORDS: Record<Language, Words> = {
     costTail: {
       subscription: { full: 'a precio de lista de la API (no se factura en tu plan)', short: '(no se factura)' },
       list: { full: 'a precio de lista (sesión, todos los agentes)', short: '(estimación)' },
+      agent: { full: 'a precio de lista de la API, según sus tokens', short: '(estimación)' },
     },
     columns: { input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida' },
     cache: 'Caché',
@@ -131,6 +138,8 @@ const WORDS: Record<Language, Words> = {
     agentColumns: { requests: 'Peticiones', input: 'Entrada', cacheRead: 'Caché leída', cacheWrite: 'Caché escrita', uncached: 'Sin caché', output: 'Salida', hit: 'Acierto', model: 'Modelo' },
     allAgents: 'Todos los agentes',
     overall: 'En conjunto',
+    agent: 'Agente',
+    main: '‹ Principal',
   },
 }
 
@@ -148,7 +157,8 @@ export function tokens (n: number): string {
  * as the bar (the meter's color, the theme's `claude` below them), as the theme's text, or dim.
  */
 export type Tone = 'meter' | 'bar' | 'plain' | 'dim'
-export type Cell = { text: string; tone: Tone }
+/** `press`: the cell is a button; `main` shows the main thread, `agent:<id>` that agent. */
+export type Cell = { text: string; tone: Tone; press?: string }
 /** One row of the card: its pieces, left to right, together exactly as wide as the content. */
 export type Row = Cell[]
 /** A row while the card is laid out: its last cell may carry a shorter form for a narrow band. */
@@ -176,7 +186,7 @@ function fitRow (row: Row, width: number): Row {
   for (const cell of row) {
     if (left <= 0) break
     const text = cell.text.slice(0, left)
-    out.push({ text, tone: cell.tone })
+    out.push({ ...cell, text })
     left -= text.length
   }
   if (left > 0) out.push({ text: ' '.repeat(left), tone: 'plain' })
@@ -198,6 +208,8 @@ export type CardView = {
   isTtlInferred?: boolean
   now?: number
   agents?: Agents
+  /** The agent the card shows instead of the main thread, with its cache's TTL in force. */
+  selected?: { agent: Agent; ttl: number; isTtlInferred: boolean }
 }
 
 const widthOfRow = (row: Row) => row.reduce((sum, cell) => sum + cell.text.length, 0)
@@ -313,7 +325,7 @@ function agentRows (agents: Agents, main: Counts, mainRequests: number, words: W
   const shown = agents.agents.slice(0, maxAgents)
   const labels = [words.agents(agents.count), ...shown.map(agent => cut(agent.label, AGENT_LABEL)), words.allAgents, words.overall]
   const width = Math.max(labelWidth, ...labels.map(text => text.length + GAP.length))
-  type Line = { label: string; values: Partial<Record<AgentColumn, string>> }
+  type Line = { label: string; press?: string; values: Partial<Record<AgentColumn, string>> }
   const valuesOf = (counts: Counts, requests: number, model?: string): Line['values'] => ({
     requests: String(requests),
     input: tokens(valueOf(counts, 'input')),
@@ -325,7 +337,7 @@ function agentRows (agents: Agents, main: Counts, mainRequests: number, words: W
     ...(model === undefined ? {} : { model: modelName(model) }),
   })
   const lines: Line[] = [
-    ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), values: valuesOf(agent, agent.requests, agent.model) })),
+    ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), press: `agent:${agent.id}`, values: valuesOf(agent, agent.requests, agent.model) })),
     { label: words.allAgents, values: valuesOf(agents.total, agents.requests) },
     { label: words.overall, values: valuesOf(withMain(agents, main), agents.requests + mainRequests) },
   ]
@@ -335,7 +347,13 @@ function agentRows (agents: Agents, main: Counts, mainRequests: number, words: W
       texts.map((text, i) => ({ text: i < texts.length - 1 ? text.padEnd(widths[i]!) + GAP : text, tone }))
     const rows: Row[] = [
       [{ text: words.agents(agents.count).padEnd(width), tone: 'plain' }, ...cells(columns.map(column => words.agentColumns[column]), 'dim')],
-      ...lines.map((line): Row => [{ text: line.label.padEnd(width), tone: 'plain' }, ...cells(columns.map(column => line.values[column] ?? ''), 'plain')]),
+      ...lines.map((line): Row => [
+        // A pressable label is a button of its own text; the padding after it is not.
+        ...(line.press === undefined
+          ? [{ text: line.label.padEnd(width), tone: 'plain' as const }]
+          : [{ text: line.label, tone: 'plain' as const, press: line.press }, { text: ' '.repeat(width - line.label.length), tone: 'plain' as const }]),
+        ...cells(columns.map(column => line.values[column] ?? ''), 'plain'),
+      ]),
     ]
     const trimmed = rows.map(row => {
       // A row's blank trailing cells (the totals have no model) are not drawn.
@@ -350,22 +368,27 @@ function agentRows (agents: Agents, main: Counts, mainRequests: number, words: W
   return []
 }
 
-/** `$4.12`; under a cent from its first significant digit, `$0.004`, `$0.0004`. */
+/**
+ * `$4.12` from a dollar; under it four decimals, as `/cost` prints them (`$0.1707`, `$0.0059`);
+ * under a hundredth of a cent from the first significant digit (`$0.00004`).
+ */
 export function usdText (usd: number): string {
-  // Rounded first, so an amount that rounds up to a cent (0.00999) reads as cents.
-  if (Number(usd.toFixed(2)) >= 0.01) return `$${usd.toFixed(2)}`
-  return `$${usd.toFixed(Math.max(3, -Math.floor(Math.log10(usd))))}`
+  // Rounded first, so an amount that rounds up (0.99999) reads in the wider form.
+  if (Number(usd.toFixed(2)) >= 1) return `$${usd.toFixed(2)}`
+  if (Number(usd.toFixed(4)) >= 0.0001) return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(Math.max(5, -Math.floor(Math.log10(usd))))}`
 }
 
 /**
  * The cost row: the whole session's cost at list prices, subagents included, then dim what it is
  * (not billed on a subscription, an estimate otherwise), in full or short where narrow, or left out.
  */
-function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth: number): Draft {
-  const tail = words.costTail[isSubscription ? 'subscription' : 'list']
+function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth: number, isAgent = false, isLowerBound = false): Draft {
+  const tail = words.costTail[isSubscription ? 'subscription' : isAgent ? 'agent' : 'list']
   return [
     { text: words.cost.padEnd(labelWidth), tone: 'plain' },
-    { text: `≈ ${usdText(usd)}`, tone: 'plain' },
+    // `≥`: some requests were of a model the price table lacks.
+    { text: `${isLowerBound ? '≥' : '≈'} ${usdText(usd)}`, tone: 'plain' },
     { text: ` ${tail.full}`, tone: 'dim', short: ` ${tail.short}` },
   ]
 }
@@ -380,8 +403,17 @@ function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth
  * where the band is short. Null with no fill.
  */
 export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES, maxAgents = CARD_AGENTS): Card | null {
-  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, isTtlInferred = false, now = 0, agents } = view
+  const { fill, agents, selected, now = 0 } = view
   if (fill === null) return null
+  // An agent shown: its own rows where the main thread's go, the window rows left out.
+  const agent = selected?.agent
+  const compactAt = agent === undefined ? view.compactAt : null
+  const ledger: Ledger | undefined = agent === undefined ? view.ledger
+    : { last: { ...agent.last, model: agent.model, at: agent.at }, total: totalOf(agent), requests: agent.requests }
+  const cache = agent === undefined ? view.cache : agent.cache
+  const ttl = selected?.ttl ?? view.ttl ?? FIVE_MINUTES
+  const isTtlInferred = selected?.isTtlInferred ?? view.isTtlInferred ?? false
+  const cost = agent === undefined ? view.cost ?? null : costAt(agent.cost, ttl >= HOUR ? '1h' : '5m')
   const words = WORDS[language]
   const mark = fill.isEstimate ? '~' : ''
   const room = Math.max(1, width - FRAME)
@@ -399,19 +431,27 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   const hasCache = cache !== undefined && (cache.last !== undefined || cache.clearedAt !== undefined)
   const extra = hasCache ? cacheRows(cache!, ttl, isTtlInferred, now, words, language, labelWidth, maxLosses) : []
   const costDraft = table !== undefined && cost !== null && Number.isFinite(cost) && cost > 0
-    ? costRow(cost, cache?.isSubscription === true, words, labelWidth)
+    ? costRow(cost, (agent === undefined ? cache : view.cache)?.isSubscription === true, words, labelWidth, agent !== undefined, agent?.isUnpriced === true)
     : undefined
   const agentSection = agents === undefined || agents.count === 0 ? []
-    : agentRows(agents, ledger?.total ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ledger?.requests ?? 0, words, room, labelWidth, maxAgents)
+    : agentRows(agents, view.ledger?.total ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, view.ledger?.requests ?? 0, words, room, labelWidth, maxAgents)
   const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
-  const figures: Row = [{ text: words.context, tone: 'plain' }]
-  if (fill.tokens !== undefined) figures.push({ text: `${GAP}${mark}${tokens(fill.tokens)} / ${tokens(fill.window)}`, tone: 'meter' })
-  figures.push({ text: `${GAP}${mark}${Math.round(fill.percent)}%`, tone: 'meter' })
-
-  const bar = split(fill.percent, content)
-  const rows: Row[] = [figures, [{ text: '━'.repeat(bar.filled), tone: 'bar' }, { text: '─'.repeat(bar.empty), tone: 'dim' }]]
+  const rows: Row[] = []
+  if (agent === undefined) {
+    const figures: Row = [{ text: words.context, tone: 'plain' }]
+    if (fill.tokens !== undefined) figures.push({ text: `${GAP}${mark}${tokens(fill.tokens)} / ${tokens(fill.window)}`, tone: 'meter' })
+    figures.push({ text: `${GAP}${mark}${Math.round(fill.percent)}%`, tone: 'meter' })
+    const bar = split(fill.percent, content)
+    rows.push(figures, [{ text: '━'.repeat(bar.filled), tone: 'bar' }, { text: '─'.repeat(bar.empty), tone: 'dim' }])
+  } else {
+    rows.push(shorten([
+      { text: words.main, tone: 'plain', press: 'main' },
+      { text: GAP, tone: 'plain' },
+      { text: `${words.agent}   ${agent.label} · ${modelName(agent.model)}`, tone: 'meter' },
+    ], content))
+  }
   if (compactAt !== null) rows.push([{ text: `${words.compact} ~${tokens(compactAt)}`, tone: 'dim' }])
   rows.push(...tokenRows)
   if (costDraft !== undefined) {
@@ -429,5 +469,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
 export function cardText (view: CardView, language: Language): string {
   const card = cardOf(view, language, Infinity, HISTORY, KEPT)
   if (card === null) return WORDS[language].none
-  return card.rows.map(row => row.map(cell => cell.text).join('').trimEnd()).join('\n')
+  // Printed text has nothing to press: ‹ Main and the gap after it are left out.
+  const printed = (row: Row) => (row[0]?.press === 'main' ? row.slice(2) : row)
+  return card.rows.map(row => printed(row).map(cell => cell.text).join('').trimEnd()).join('\n')
 }

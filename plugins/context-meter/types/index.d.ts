@@ -36,15 +36,29 @@ export type ContextMeterLedger = {
 /**
  * The subagents' requests this session (loops `$.agent.list()` names; the engine's own forks are
  * not counted): a row per agent, most recently active first (at most 50), with its label (name, else
- * type), the model of its last response and when that request started; the totals over every
- * agent, and how many requests and agents. `startedAt` as in the ledger.
+ * task description, else type), the model of its last response, when that request started, its
+ * totals, its last request, its own prompt cache (losses included), its cost at list prices in parts
+ * (`isUnpriced` when a request's model was not in the price table); the totals over every agent,
+ * how many requests and agents, and the TTL an agent's transcript last showed. `startedAt` as in
+ * the ledger.
  */
 export type ContextMeterAgents = {
   startedAt?: number
-  agents: (ContextMeterCounts & { id: string; label: string; model: string; requests: number; at: number })[]
+  agents: (ContextMeterCounts & {
+    id: string
+    label: string
+    model: string
+    requests: number
+    at: number
+    last: ContextMeterCounts
+    cache: ContextMeterCache
+    cost: { base: number; write5m: number; write1h: number }
+    isUnpriced: boolean
+  })[]
   total: ContextMeterCounts
   requests: number
   count: number
+  lastTtl?: ContextMeterTtl
 }
 
 /** A cache loss: when, the tokens of the previous prefix not read back, the first cause that held, and the pause before it (ms). */

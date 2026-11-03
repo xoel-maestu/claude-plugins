@@ -1,7 +1,10 @@
 import type { AgentInfo, TurnUsage } from 'claude-code'
 
-import type { ContextMeterAgents } from '../types'
+import type { ContextMeterAgents, ContextMeterTtl } from '../types'
+import { EMPTY as NO_CACHE, observe, observeTtl } from './cache'
+import type { TtlSetting } from './cache'
 import type { Counts } from './ledger'
+import { NO_COST, familyOf, plusCost, requestCost } from './pricing'
 
 export type Agents = ContextMeterAgents
 export type Agent = Agents['agents'][number]
@@ -28,6 +31,10 @@ const countsOf = (usage: TurnUsage): Counts => ({
   cacheWrite: usage.cache_creation_input_tokens,
 })
 
+/** An agent's own totals: the four counts summed over its requests. */
+export const totalOf = (agent: Agent): Counts =>
+  ({ input: agent.input, output: agent.output, cacheRead: agent.cacheRead, cacheWrite: agent.cacheWrite })
+
 /**
  * What a row is called: the agent's name when it has one (what SendMessage addresses), else the
  * Agent call's description of its task (a few words, which tells two agents of one type apart),
@@ -37,27 +44,40 @@ export const labelOf = (info: Partial<Pick<AgentInfo, 'name' | 'type' | 'descrip
   info.name || info.description?.trim() || info.type || 'agent'
 
 /** `claude-haiku-5-5` → `haiku 5.5`, `claude-sonnet-4-5-20250929` → `sonnet 4.5`; another id as it is. */
-export function modelName (id: string): string {
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[.*\])?$/.exec(id)
-  if (match === null) return id
-  return `${match[1]} ${match[2]}${match[3] === undefined ? '' : `.${match[3]}`}`
-}
+export const modelName = (id: string): string => familyOf(id) ?? id
 
 /**
- * A subagent's response at `at` (its request's start): added to its row and to the total. Rows are
- * ordered by their last request's start, newest first; past KEPT rows the oldest goes, and the
- * total and the count keep it.
+ * A subagent's response to a request sent at `at`: added to its row (its last request, totals,
+ * cost at list prices, and its own prompt cache, checked for a loss as the main thread's is) and to
+ * the total. A new agent's cache takes the TTL another agent's transcript last showed, else 5m, as
+ * an inference. Rows are ordered by their last request's start, newest first; past KEPT rows the
+ * oldest goes, and the total and the count keep it.
  */
-export function add (state: Agents, info: Pick<AgentInfo, 'id'> & Partial<Pick<AgentInfo, 'name' | 'type' | 'description'>>, usage: TurnUsage, at: number): Agents {
+export function add (
+  state: Agents,
+  info: Pick<AgentInfo, 'id'> & Partial<Pick<AgentInfo, 'name' | 'type' | 'description'>>,
+  usage: TurnUsage,
+  at: number,
+  isSubscription: boolean,
+  setting: TtlSetting,
+): Agents {
   const counts = countsOf(usage)
   const before = state.agents.find(agent => agent.id === info.id)
+  const price = requestCost(usage)
+  // Until its transcript shows one, an agent's TTL is inferred: another agent's, else 5m (subagents
+  // have been seen writing 5m entries on a subscription whose main thread writes 1h ones).
+  const cacheBefore = before?.cache ?? { ...NO_CACHE, storedTtl: state.lastTtl ?? '5m' }
   const row: Agent = {
     id: info.id,
     label: labelOf(info),
     model: usage.model,
-    ...plus(before ?? ZERO, counts),
+    ...plus(before === undefined ? ZERO : totalOf(before), counts),
     requests: (before?.requests ?? 0) + 1,
     at,
+    last: counts,
+    cache: observe(cacheBefore, usage, at, isSubscription, setting),
+    cost: price === null ? (before?.cost ?? NO_COST) : plusCost(before?.cost ?? NO_COST, price),
+    isUnpriced: (before?.isUnpriced ?? false) || price === null,
   }
   return {
     ...state,
@@ -68,9 +88,22 @@ export function add (state: Agents, info: Pick<AgentInfo, 'id'> & Partial<Pick<A
   }
 }
 
+/** The TTL an agent's transcript shows for its last cache write: its own, and the inference for agents to come. */
+export function seeTtl (state: Agents, id: string, ttl: ContextMeterTtl): Agents {
+  const agent = state.agents.find(row => row.id === id)
+  if (agent === undefined || (agent.cache.observedTtl === ttl && state.lastTtl === ttl)) return state
+  return {
+    ...state,
+    lastTtl: ttl,
+    agents: state.agents.map(row => row.id === id ? { ...row, cache: observeTtl(row.cache, ttl) }
+      // The others without a TTL of their own take it as their inference.
+      : row.cache.observedTtl === undefined ? { ...row, cache: { ...row.cache, storedTtl: ttl } } : row),
+  }
+}
+
 /** The main thread's counts and the subagents' together. */
 export const withMain = (state: Agents, main: Counts): Counts => plus(state.total, main)
 
-/** The agents of the session that began at `startedAt`: these if they are its, none otherwise (/clear). */
+/** The agents of the session that began at `startedAt`: these if they are its, none otherwise (/clear); the TTL inference is kept. */
 export const since = (state: Agents, startedAt: number): Agents =>
-  state.startedAt === startedAt ? state : { ...EMPTY, startedAt }
+  state.startedAt === startedAt ? state : { ...EMPTY, startedAt, ...(state.lastTtl === undefined ? {} : { lastTtl: state.lastTtl }) }
