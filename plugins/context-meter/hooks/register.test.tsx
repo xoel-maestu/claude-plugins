@@ -1984,7 +1984,7 @@ test('after /clear the estimate comes at once, not at the next check', async ($,
   // After /clear the host has no figure for the new window yet.
   w.live.context = fill()
   await $.session.end({ reason: 'clear' } as never)
-  await new Promise(resolve => setTimeout(resolve, 0))
+  for (let i = 0; i < 200; i++) await Promise.resolve()
   // No 2 s tick has run: the footer already shows the new estimate.
   const ui = await footer($)
   expect((await row(ui)).join('')).toMatch(/~/)
