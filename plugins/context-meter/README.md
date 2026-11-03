@@ -71,8 +71,10 @@ With `cacheTtl` set to `auto`, the plugin reads the TTL of the last cache write 
 
 - The meter is drawn in the footer row (`SessionMode`). The card is drawn in the band above the prompt (`AbovePrompt`), hidden until the pointer is on the meter or on the card. Both join one hover group, so no code runs on hover.
 - The figure comes from `$.session.usage()`, read after each response and every 2 seconds, which catches resumes and rewinds.
-- Token counts come from the `turn.step` hook, main thread only (requests with no `agentId`). They are kept in plugin state, so reloading the plugin keeps them, and `/clear` resets them.
-- A request is a cache loss when the previous request's cached prefix (cache read plus cache write) is over 1024 tokens and this request reads back more than 1024 tokens less than it.
+- Token counts come from the `turn.step` hook, main thread only (requests with no `agentId`). They are kept in plugin state, so reloading the plugin keeps them, and `/clear` resets them. A compaction's own summarizer request is not a `turn.step`, so it is never counted as the session's work.
+- Input is uncached input plus cache read plus cache write, and the hit rate is cache read over that input: the total input of Anthropic's [prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+- The cache is timed from the start of each main-thread request, as those docs time it: an entry lives for its TTL from the start of the request that wrote or read it, and each read starts it over. The idle time behind an `idle` loss is counted between request starts.
+- A request is a cache loss when the previous request's cached prefix (cache read plus cache write) is over 1024 tokens and this request reads back more than 1024 tokens less than it. The 1024 is a noise floor chosen by this plugin, not an API rule: the smallest cacheable prompt is 512 to 4,096 tokens depending on the model.
 - The TTL is read from the end of the transcript file (the last 256 KiB, with `tail`; the whole file up to 4 MiB where `tail` is not available), only when the file has changed.
 - The last TTL seen and whether the session is on a subscription are kept in the plugin store, so the next session starts with them.
 

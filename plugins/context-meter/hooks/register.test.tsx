@@ -34,11 +34,14 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
     usage: null as TurnUsage | null,
     // Rate-limit windows: a subscription has some, an API key none.
     rateLimits: [] as never[],
+    /** How long the model takes to answer a step, on the mock clock. */
+    stepMs: 0,
   }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 'test-session' }) as never)
-  on('session.compact', () => ({ messages: [summary] }) as never)
+  // A compaction reports its summarizer's own request, as core does.
+  on('session.compact', () => ({ messages: [summary], usage: { input_tokens: 3000, output_tokens: 2000, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 0 } }) as never)
   on('config.set', ($, e) => ({ value: e.value }))
   on('command.register', () => ({ value: { command: 'context-meter' } }) as never)
   on('session.usage', async ($, e) => {
@@ -59,6 +62,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
   })
   // The model's response to a request: no text, the counts in live.usage.
   on('turn.step', async function* ($, e) {
+    if (live.stepMs > 0) await clock.advance(live.stepMs)
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: live.usage }
   })
   on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -494,6 +498,18 @@ test("another loop's response (a subagent, a fork of the engine) changes nothing
   expect(before[1]).toMatch(/^Last request   105k +100k +4k +1k +2k$/)
 })
 
+// Core sends a compaction's summarizer request through session.compact alone, never as a turn.step
+// (seen in a real session, Claude Code 2.1.317). This pins the plugin's side: the usage that
+// session.compact reports is not added.
+test("a compaction's own summarizer request adds nothing to the tokens", async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(1000, 100_000, 4000, 2000))
+  const before = await tokenLines($)
+  await $.session.compact({ trigger: 'manual', messages: [summary] })
+  expect(await tokenLines($)).toEqual(before)
+})
+
 test('a response without usage counts nothing; before any response there are no token rows', async ($, on) => {
   const w = world(on, fill(62))
   await startSession($)
@@ -695,6 +711,21 @@ test('without rate limits the cache lives 5m and then reads as expired', async (
   expect(await status()).toBe(' Cache          expired 1m ago')
 })
 
+test('the cache lives from the start of the request, not its end, and a pause is counted between starts', async ($, on) => {
+  // Anthropic's prompt caching docs: the lifetime counts from the start of the request that writes or reads the entry.
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  w.live.stepMs = 2 * MIN
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[0]).toBe(`Cache          active until ${clockTime(5 * MIN)} (in 3m, TTL 5m?)`)
+  // 4 minutes after the first response ends, 6 after it started: past a 5 minute TTL.
+  w.live.stepMs = 0
+  await w.clock.advance(4 * MIN)
+  await respond($, w, counts(5, 0, 50_000, 10))
+  expect((await cacheLines($))[1]).toMatch(/^Cache losses   \d\d:\d\d  −50k  idle 6m > TTL$/)
+})
+
 test('rate limits that show up after the first request make the TTL 1h, for the request already made', async ($, on) => {
   const w = world(on, fill(62))
   await startSession($)
@@ -739,6 +770,17 @@ test('auto TTL switches to 1h after a hit past a 5 minute pause', async ($, on) 
   await w.clock.advance(6 * MIN)
   await respond($, w, counts(5, 50_000, 1000, 10))
   expect(await cacheLines($)).toEqual([`Cache          active until ${clockTime(6 * MIN + HOUR)} (in 1h00m, TTL 1h?)`, 'No cache losses this session'])
+})
+
+test('a hit 5m 30s after the previous request started, 3m 30s after it ended, shows the 1h TTL', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  w.live.stepMs = 2 * MIN
+  await respond($, w, counts(5, 0, 50_000, 10))
+  w.live.stepMs = 0
+  await w.clock.advance(3 * MIN + 30_000)
+  await respond($, w, counts(5, 50_000, 1000, 10))
+  expect((await cacheLines($))[0]).toMatch(/TTL 1h\?\)$/)
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {
