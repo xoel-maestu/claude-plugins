@@ -8,7 +8,7 @@ import { split } from './fit'
 import { hitRate } from './ledger'
 import type { Counts, Ledger, Models } from './ledger'
 import { plusModels } from './ledger'
-import { costAt } from './pricing'
+import { costAt, savedAt } from './pricing'
 import { trendOf } from './trend'
 
 export type Language = 'en' | 'es'
@@ -57,6 +57,9 @@ type Words = {
   hitText: string
   lastHit: string
   modelSwitch: string
+  saved: string
+  savedShare: (percent: number) => string
+  savedMore: (percent: number) => string
   cost: string
   /** After the amount: on a subscription it is not billed, otherwise it is an estimate. */
   costTail: Record<'subscription' | 'list' | 'agent', { full: string; short: string }>
@@ -92,6 +95,9 @@ const WORDS: Record<Language, Words> = {
     hitText: 'of input read from cache',
     lastHit: 'last request',
     modelSwitch: 'model switch',
+    saved: 'Cache saved',
+    savedShare: percent => `(input ${percent}% cheaper than uncached)`,
+    savedMore: percent => `(input ${percent}% dearer than uncached)`,
     cost: 'Cost',
     costTail: {
       subscription: { full: 'at API list prices (not billed on your plan)', short: '(not billed)' },
@@ -126,6 +132,9 @@ const WORDS: Record<Language, Words> = {
     hitText: 'de la entrada leída de caché',
     lastHit: 'última petición',
     modelSwitch: 'cambio de modelo',
+    saved: 'Ahorro de caché',
+    savedShare: percent => `(entrada un ${percent}% más barata que sin caché)`,
+    savedMore: percent => `(entrada un ${percent}% más cara que sin caché)`,
     cost: 'Coste',
     costTail: {
       subscription: { full: 'a precio de lista de la API (no se factura en tu plan)', short: '(no se factura)' },
@@ -239,7 +248,7 @@ function valueOf (counts: Counts, column: Column): number {
 
 /** The label column: as wide as the longest label of the card's sections, and a gap. */
 const labelWidthOf = (words: Words) =>
-  Math.max(...[words.last, words.session, words.hit, words.cost, words.cache, words.losses].map(text => text.length)) + GAP.length
+  Math.max(...[words.last, words.session, words.hit, words.cost, words.saved, words.cache, words.losses].map(text => text.length)) + GAP.length
 
 /**
  * The token table in `columns`: a dim header row, then the last request and the session, each figure
@@ -420,6 +429,30 @@ const MODEL_LAYOUTS: AgentColumn[][] = [
   ['input', 'hit'],
 ]
 
+/** `a` less `b`, by model: a row with no request left goes. Costs subtract part by part. */
+function minusModels (a: Models, b: Models): Models {
+  const out: Models = {}
+  for (const [model, row] of Object.entries(a)) {
+    const less = b[model]
+    if (less === undefined) { out[model] = row; continue }
+    const requests = row.requests - less.requests
+    if (requests <= 0) continue
+    const cost = row.cost === undefined || less.cost === undefined ? undefined : {
+      base: row.cost.base - less.cost.base,
+      write5m: row.cost.write5m - less.cost.write5m,
+      write1h: row.cost.write1h - less.cost.write1h,
+      ...(row.cost.output === undefined || less.cost.output === undefined ? {} : { output: row.cost.output - less.cost.output }),
+      ...(row.cost.plain === undefined || less.cost.plain === undefined ? {} : { plain: row.cost.plain - less.cost.plain }),
+    }
+    out[model] = {
+      input: row.input - less.input, output: row.output - less.output, cacheRead: row.cacheRead - less.cacheRead,
+      cacheWrite: row.cacheWrite - less.cacheWrite, requests, ...(cost === undefined ? {} : { cost }),
+      ...(row.isUnpriced === true ? { isUnpriced: true } : {}),
+    }
+  }
+  return out
+}
+
 /** Tallies by model and the TTL their cache writes are priced at. */
 type ModelSource = { models: Models; ttl: Ttl }
 
@@ -552,17 +585,50 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   const ttlKey = (ms: number): Ttl => (ms >= HOUR ? '1h' : '5m')
   const agentTtl = (row: Agent): Ttl => view.ttlSetting !== undefined && view.ttlSetting !== 'auto' ? view.ttlSetting
     : row.cache?.observedTtl ?? row.cache?.storedTtl ?? '5m'
+  // On the main thread's card: each kept agent at its own TTL, and what the session-wide tally holds
+  // beyond the kept rows (agents past the 50 kept) at the TTL agents were last seen writing.
+  const kept = agent === undefined ? agents?.agents ?? [] : below
+  const beyond = agent === undefined ? minusModels(agents?.models ?? {}, kept.reduce((sum, row) => plusModels(sum, row.models ?? {}), {} as Models)) : {}
   const sources: ModelSource[] = [
     { models: (agent === undefined ? view.ledger?.models : agent.models) ?? {}, ttl: ttlKey(ttl) },
-    ...(agent === undefined
-      ? [{ models: agents?.models ?? {}, ttl: view.ttlSetting !== undefined && view.ttlSetting !== 'auto' ? view.ttlSetting : agents?.lastTtl ?? '5m' }]
-      : below.map(row => ({ models: row.models ?? {}, ttl: agentTtl(row) }))),
+    ...kept.map(row => ({ models: row.models ?? {}, ttl: agentTtl(row) })),
+    ...(Object.keys(beyond).length === 0 ? [] : [{ models: beyond, ttl: view.ttlSetting !== undefined && view.ttlSetting !== 'auto' ? view.ttlSetting : agents?.lastTtl ?? '5m' }]),
   ]
   // Counts kept from before models were tallied leave the rows short of the loop's requests: then none.
   const loopRequests = (ledger?.requests ?? 0) + (agent === undefined ? agents?.requests ?? 0 : below.reduce((sum, row) => sum + row.requests, 0))
   const tallied = sources.reduce((sum, source) => sum + Object.values(source.models).reduce((n, row) => n + row.requests, 0), 0)
   const modelSection = tallied === loopRequests ? modelRows(sources, words, room, labelWidth) : []
-  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(hitRow === undefined ? [] : [widthOfRow(hitRow)]), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
+  // What the cache saved, at list prices, over what the Cost row covers: the whole session on the
+  // main thread's card, the agent alone on an agent's. None where a part was kept before this was
+  // counted or a model is not in the price table.
+  const savedRow = ((): Draft | undefined => {
+    // The agent alone on its card: its own tallies must be whole; the main card's are the loop's.
+    const scope = agent === undefined ? sources : sources.slice(0, 1)
+    const whole = agent === undefined ? tallied === loopRequests
+      : Object.values(scope[0]!.models).reduce((n, row) => n + row.requests, 0) === agent.requests
+    if (table === undefined || !whole) return undefined
+    let saved = 0
+    let plain = 0
+    for (const { models, ttl: priced } of scope) {
+      for (const row of Object.values(models)) {
+        // A model the price table lacks, or a tally kept with no cost, would leave the figure partial: then none.
+        if (row.isUnpriced === true || row.cost === undefined) return undefined
+        const part = savedAt(row.cost, priced)
+        if (part === null) return undefined
+        saved += part.saved
+        plain += part.plain
+      }
+    }
+    // Nothing to show where it rounds to nothing.
+    if (!(plain > 0) || Math.abs(saved) < 0.00005) return undefined
+    const percent = Math.round((Math.abs(saved) / plain) * 100)
+    return [
+      { text: words.saved.padEnd(labelWidth), tone: 'plain' },
+      { text: `≈ ${saved < 0 ? '−' : ''}${usdText(Math.abs(saved))}`, tone: 'plain' },
+      { text: ` ${saved < 0 ? words.savedMore(percent) : words.savedShare(percent)}`, tone: 'dim', short: '' },
+    ]
+  })()
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(hitRow === undefined ? [] : [widthOfRow(hitRow)]), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...(savedRow === undefined ? [] : [widthOfRow(savedRow)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow), ...modelSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const rows: Row[] = []
@@ -589,6 +655,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     // The amount always fits where the table does: only its tail shortens or goes.
     rows.push(shorten(costDraft, content))
   }
+  if (savedRow !== undefined) rows.push(shorten(savedRow, content))
   rows.push(...extra.map(row => shorten(row, content)))
   if (agentSection.length > 0) rows.push([], ...agentSection)
   if (modelSection.length > 0) rows.push([], ...modelSection)

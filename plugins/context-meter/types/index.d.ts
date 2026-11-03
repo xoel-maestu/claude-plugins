@@ -60,7 +60,7 @@ export type ContextMeterAgents = {
     /** The request before the last, and its model, for the hit rate's trend. */
     previous?: ContextMeterCounts & { model: string }
     cache: ContextMeterCache
-    cost: { base: number; write5m: number; write1h: number }
+    cost: { base: number; write5m: number; write1h: number; output?: number; plain?: number }
     isUnpriced: boolean
     /** Its counts and requests by the model that answered. */
     models?: Record<string, ContextMeterModel>
@@ -76,7 +76,7 @@ export type ContextMeterAgents = {
 /** One model's counts and requests, and their cost at list prices in parts (`isUnpriced`: a request was of a model the price table lacks). */
 export type ContextMeterModel = ContextMeterCounts & {
   requests: number
-  cost?: { base: number; write5m: number; write1h: number }
+  cost?: { base: number; write5m: number; write1h: number; output?: number; plain?: number }
   isUnpriced?: boolean
 }
 
