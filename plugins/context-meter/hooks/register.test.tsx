@@ -728,7 +728,7 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Its last request's input over Haiku 5.5's window: not the session's model (model-a here), so the
     // host reports none and the docs' 1M is marked inferred.
     'Context   30k / 1M?   3%?',
-    '━━' + '─'.repeat(76),
+    '━━━' + '─'.repeat(97),
     '               Input   Cache read   Cache write   Uncached   Output',
     'Last request   30k     0            30k           2          148',
     'Session        47.6k   4.8k         42.8k         4          314',
@@ -738,8 +738,8 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Uncached, its 47,645 input tokens would cost $0.0048; with 42,795 written at 5m they cost $0.0054.
     'Cache saved    ≈ −$0.0006 (13% more than without the cache)',
     `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
-    // Getting the 17,641 lost tokens back: written again at 5m instead of read, (0.125 − 0.01) per MTok.
-    `Cache losses   ${clockTime(MIN)}  −17.6k  ≈ $0.0020  invalidated (prompt or tools changed)`,
+    // The 17,641 lost tokens written again at 5m: 0.125 per MTok in all, (0.125 − 0.01) beyond reading them.
+    `Cache losses   ${clockTime(MIN)}  −17.6k  rewrite $0.0022 · extra $0.0020  invalidated (prompt or tools changed)`,
   ])
   expect(((await run($, 'review')).text ?? '').split('\n')[0]).toBe('Main › reviewer · sonnet 5.5')
   expect((await run($, 'nobody')).text).toBe('No agent of this session matches "nobody".')
@@ -1389,11 +1389,15 @@ test("each loss's cost in a column, aligned; a narrow band keeps the cost and sh
   await respond($, w, counts(5, 8000, 2000, 10, 'claude-sonnet-5-5'))
   // 5m (no rate limits): 80,000 rewritten × 2.40 = $0.192; the compaction lost 92,000 but wrote 2,000: × 2.40 = $0.0048.
   expect((await cacheLines($)).slice(1)).toEqual([
-    `Cache losses   ${clockTime(2 * MIN)}  −92k  ≈ $0.0048  /compact`,
-    `               ${clockTime(MIN)}  −80k  ≈ $0.1920  invalidated (prompt or tools changed)`,
+    `Cache losses   ${clockTime(2 * MIN)}  −92k  rewrite $0.0050 · extra $0.0048  /compact`,
+    `               ${clockTime(MIN)}  −80k  rewrite $0.2000 · extra $0.1920  invalidated (prompt or tools changed)`,
   ])
-  const narrow = (await cardIn(await band($, 60))).rows.filter(row => row.includes('≈ $0.'))
-  expect(narrow.map(row => row.trim().replace(/ +/g, ' '))).toContain(`${clockTime(MIN)} −80k ≈ $0.1920 invalidated`)
+  // Where one row is too wide every loss row keeps the extra cost alone, the causes still aligned.
+  const narrow = (await cardIn(await band($, 75))).rows.filter(row => row.includes('extra $0.')).map(row => row.trimEnd())
+  expect(narrow).toEqual([
+    ` Cache losses   ${clockTime(2 * MIN)}  −92k  extra $0.0048  /compact`,
+    `                ${clockTime(MIN)}  −80k  extra $0.1920  invalidated`,
+  ])
 })
 
 test('a loss with no cost (a model off the price table) leaves its cell blank, the causes aligned; the cost follows the TTL the transcript shows later', async ($, on) => {
@@ -1406,13 +1410,23 @@ test('a loss with no cost (a model off the price table) leaves its cell blank, t
   await w.clock.advance(MIN)
   await respond($, w, counts(5, 0, 100_000, 10, 'other-model'))
   expect((await cacheLines($)).slice(1)).toEqual([
-    `Cache losses   ${clockTime(2 * MIN)}  −100k             model changed`,
-    `               ${clockTime(MIN)}  −80k   ≈ $0.1920  invalidated (prompt or tools changed)`,
+    `Cache losses   ${clockTime(2 * MIN)}  −100k                                   model changed`,
+    `               ${clockTime(MIN)}  −80k   rewrite $0.2000 · extra $0.1920  invalidated (prompt or tools changed)`,
   ])
   // The transcript then shows the writes were 1h: the loss is priced at it, 80,000 × 3.90.
   file.lines.push(entry(0, 100_000))
   await stop($)
-  expect((await cacheLines($))[2]).toBe(`               ${clockTime(MIN)}  −80k   ≈ $0.3120  invalidated (prompt or tools changed)`)
+  // The transcript then shows the writes were 1h: 80,000 × 4 in all, × 3.90 beyond reading them.
+  expect((await cacheLines($))[2]).toBe(`               ${clockTime(MIN)}  −80k   rewrite $0.3200 · extra $0.3120  invalidated (prompt or tools changed)`)
+})
+
+test('the loss costs in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(5, 0, 100_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 20_000, 80_000, 10, 'claude-sonnet-5-5'))
+  expect((await cacheLines($))[1]).toBe(`Pérdidas de caché   ${clockTime(MIN)}  −80k  reescritura $0.2000 · de más $0.1920  invalidada (cambió el prompt o las herramientas)`)
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {

@@ -81,7 +81,10 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
   const rewritten = Math.min(lost, usage.cache_creation_input_tokens)
   const loss: Loss = {
     at, lost, cause, gap,
-    ...(rate === null ? {} : { cost: { write5m: (rewritten * (rate.write5m - rate.read)) / 1e6, write1h: (rewritten * (rate.write1h - rate.read)) / 1e6 } }),
+    ...(rate === null ? {} : {
+      cost: { write5m: (rewritten * (rate.write5m - rate.read)) / 1e6, write1h: (rewritten * (rate.write1h - rate.read)) / 1e6 },
+      rewrite: { write5m: (rewritten * rate.write5m) / 1e6, write1h: (rewritten * rate.write1h) / 1e6 },
+    }),
   }
   return { ...next, losses: [loss, ...cache.losses].slice(0, HISTORY) }
 }

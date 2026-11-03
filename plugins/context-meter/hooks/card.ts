@@ -58,6 +58,8 @@ type Words = {
   lastHit: string
   modelSwitch: string
   saved: string
+  lossRewrite: (usd: string) => string
+  lossExtra: (usd: string) => string
   savedShare: (percent: number) => string
   savedMore: (percent: number) => string
   cost: string
@@ -96,6 +98,8 @@ const WORDS: Record<Language, Words> = {
     lastHit: 'last request',
     modelSwitch: 'model switch',
     saved: 'Cache saved',
+    lossRewrite: usd => `rewrite ${usd}`,
+    lossExtra: usd => `extra ${usd}`,
     savedShare: percent => `(${percent}% less than without the cache)`,
     savedMore: percent => `(${percent}% more than without the cache)`,
     cost: 'Cost',
@@ -133,6 +137,8 @@ const WORDS: Record<Language, Words> = {
     lastHit: 'última petición',
     modelSwitch: 'cambio de modelo',
     saved: 'Ahorro de caché',
+    lossRewrite: usd => `reescritura ${usd}`,
+    lossExtra: usd => `de más ${usd}`,
     savedShare: percent => `(un ${percent}% menos que sin caché)`,
     savedMore: percent => `(un ${percent}% más que sin caché)`,
     cost: 'Coste',
@@ -182,13 +188,42 @@ export type Row = Cell[]
 /** A row while the card is laid out: its last cell may carry a shorter form for a narrow band. */
 type Draft = (Cell & { short?: string })[]
 
-/** The row as it fits `width`: whole, else with its last cell's short form, else without that cell. */
+/**
+ * The row as it fits `width`: whole, else with its last cell's short form, else with every cell's
+ * short form, else that without its last cell.
+ */
 function shorten (row: Draft, width: number): Row {
-  if (widthOfRow(row) <= width) return row
+  return atLevel(row, levelOf(row, width))
+}
+
+/** The row at a shortening level: 0 whole, 1 its last cell short, 2 every cell short, 3 that without its last cell. */
+function atLevel (row: Draft, level: number): Row {
   const tail = row.at(-1)
-  if (tail?.short === undefined) return row
-  const short = [...row.slice(0, -1), { text: tail.short, tone: tail.tone }]
-  return widthOfRow(short) <= width ? short : row.slice(0, -1)
+  if (level === 0 || tail?.short === undefined) return row
+  const short = (cell: Draft[number]) => ({ ...cell, text: cell.short ?? cell.text, short: undefined })
+  if (level === 1) return [...row.slice(0, -1), short(tail)]
+  const allShort = row.map(short)
+  return level === 2 ? allShort : allShort.slice(0, -1)
+}
+
+/** The least shortening level at which the row fits `width` (3 when none does). */
+function levelOf (row: Draft, width: number): number {
+  for (let level = 0; level < 3; level++) if (widthOfRow(atLevel(row, level)) <= width) return level
+  return 3
+}
+
+/**
+ * Rows that line up in columns: where any of them needs its inner cells short (level 2 or more),
+ * every row takes them short, so the columns stay aligned; each row's last cell then shortens on
+ * its own, only where that row does not fit.
+ */
+function shortenTogether (rows: Draft[], width: number): Row[] {
+  const isInnerShort = rows.some(row => row.at(-1)?.short !== undefined && levelOf(row, width) >= 2)
+  return rows.map(row => {
+    if (!isInnerShort) return shorten(row, width)
+    const inner: Draft = row.map((cell, i) => (i < row.length - 1 && cell.short !== undefined ? { ...cell, text: cell.short, short: undefined } : cell))
+    return shorten(inner, width)
+  })
 }
 
 /**
@@ -321,13 +356,23 @@ function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: numb
   }
   const lost = losses.map(loss => `−${tokens(loss.lost)}`)
   const lostWidth = Math.max(...lost.map(text => text.length))
-  // What getting each back cost, in a column before the cause: written again instead of read.
-  const costs = losses.map(loss => (typeof loss.cost !== 'object' || loss.cost === null ? '' : `≈ ${usdText(ttl >= HOUR ? loss.cost.write1h : loss.cost.write5m)}`))
-  const costWidth = Math.max(0, ...costs.map(text => text.length))
+  // Rewriting the lost tokens in all, and what that cost beyond reading them (what the loss cost).
+  const at = (parts?: { write5m: number; write1h: number } | number) =>
+    typeof parts !== 'object' || parts === null ? undefined : ttl >= HOUR ? parts.write1h : parts.write5m
+  const costs = losses.map(loss => {
+    const extra = at(loss.cost)
+    const rewrite = at(loss.rewrite)
+    if (extra === undefined) return { full: '', short: '' }
+    const less = words.lossExtra(usdText(extra))
+    return { full: rewrite === undefined ? less : `${words.lossRewrite(usdText(rewrite))} · ${less}`, short: less }
+  })
+  // Where the band is narrow the cell keeps what the loss cost beyond reading the tokens.
+  const costWidth = Math.max(0, ...costs.map(cost => cost.full.length))
+  const shortWidth = Math.max(0, ...costs.map(cost => cost.short.length))
   const lines: Draft[] = losses.map((loss, i) => [
     { text: `${clockTime(loss.at)}  `, tone: 'dim' },
     { text: `${lost[i]!.padEnd(lostWidth)}  `, tone: 'plain' },
-    ...(costWidth === 0 ? [] : [{ text: `${costs[i]!.padEnd(costWidth)}  `, tone: 'plain' as const }]),
+    ...(costWidth === 0 ? [] : [{ text: `${costs[i]!.full.padEnd(costWidth)}  `, tone: 'plain' as const, short: `${costs[i]!.short.padEnd(shortWidth)}  ` }]),
     loss.cause === 'expired'
       ? { text: words.causes.expired(span(loss.gap)), tone: 'plain', short: words.causesShort.expired(span(loss.gap)) }
       : { text: words.causes[loss.cause], tone: 'plain', short: words.causesShort[loss.cause] },
@@ -660,7 +705,8 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     rows.push(shorten(costDraft, content))
   }
   if (savedRow !== undefined) rows.push(shorten(savedRow, content))
-  rows.push(...extra.map(row => shorten(row, content)))
+  // The status row on its own; the losses under it together, so their columns stay aligned.
+  rows.push(...extra.slice(0, 1).map(row => shorten(row, content)), ...shortenTogether(extra.slice(1), content))
   if (agentSection.length > 0) rows.push([], ...agentSection)
   if (modelSection.length > 0) rows.push([], ...modelSection)
 
