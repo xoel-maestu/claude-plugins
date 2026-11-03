@@ -96,8 +96,8 @@ const WORDS: Record<Language, Words> = {
     lastHit: 'last request',
     modelSwitch: 'model switch',
     saved: 'Cache saved',
-    savedShare: percent => `(input ${percent}% cheaper than uncached)`,
-    savedMore: percent => `(input ${percent}% dearer than uncached)`,
+    savedShare: percent => `(${percent}% less than without the cache)`,
+    savedMore: percent => `(${percent}% more than without the cache)`,
     cost: 'Cost',
     costTail: {
       subscription: { full: 'at API list prices (not billed on your plan)', short: '(not billed)' },
@@ -133,8 +133,8 @@ const WORDS: Record<Language, Words> = {
     lastHit: 'última petición',
     modelSwitch: 'cambio de modelo',
     saved: 'Ahorro de caché',
-    savedShare: percent => `(entrada un ${percent}% más barata que sin caché)`,
-    savedMore: percent => `(entrada un ${percent}% más cara que sin caché)`,
+    savedShare: percent => `(un ${percent}% menos que sin caché)`,
+    savedMore: percent => `(un ${percent}% más que sin caché)`,
     cost: 'Coste',
     costTail: {
       subscription: { full: 'a precio de lista de la API (no se factura en tu plan)', short: '(no se factura)' },
@@ -322,7 +322,7 @@ function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: numb
   const lost = losses.map(loss => `−${tokens(loss.lost)}`)
   const lostWidth = Math.max(...lost.map(text => text.length))
   // What getting each back cost, in a column before the cause: written again instead of read.
-  const costs = losses.map(loss => (loss.cost === undefined ? '' : `≈ ${usdText(loss.cost)}`))
+  const costs = losses.map(loss => (typeof loss.cost !== 'object' || loss.cost === null ? '' : `≈ ${usdText(ttl >= HOUR ? loss.cost.write1h : loss.cost.write5m)}`))
   const costWidth = Math.max(0, ...costs.map(text => text.length))
   const lines: Draft[] = losses.map((loss, i) => [
     { text: `${clockTime(loss.at)}  `, tone: 'dim' },

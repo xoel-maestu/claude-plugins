@@ -100,7 +100,7 @@ test("each agent's own cache: a loss when its prefix is not read back", () => {
   state = add(state, explore, usage(2, 0, 30_000, 10), 60_000)
   expect(state.agents[0]!.cache.losses).toMatchObject([{ at: 60_000, lost: 30_000, cause: 'invalidated', gap: 60_000 }])
   // At its 5m inference: 30,000 × (0.125 − 0.01) per MTok on Haiku 5.5.
-  expect(Math.abs(state.agents[0]!.cache.losses[0]!.cost! - 30_000 * 0.115 / 1e6) < 1e-12).toBe(true)
+  expect(Math.abs(state.agents[0]!.cache.losses[0]!.cost!.write5m - 30_000 * 0.115 / 1e6) < 1e-12).toBe(true)
 })
 
 test("an agent's transcript TTL is its own, and the inference for the agents after it", () => {

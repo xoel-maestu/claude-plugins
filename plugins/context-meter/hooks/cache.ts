@@ -74,10 +74,15 @@ export function observe (cache: Cache, usage: TurnUsage, at: number, isSubscript
     : gap > ttlOf(base, setting) ? 'expired'
     : 'invalidated'
   const lost = previous.prefix - read
-  // Getting them back: written again at the TTL in force instead of read, at the answering model's rates.
+  // Getting them back: the lost tokens this request wrote again (a compaction or a shorter prompt
+  // writes fewer than it lost) cost the write rate instead of the read rate, at the answering
+  // model's rates. Kept at both TTLs: the card prices them at the one in force, as it does all writes.
   const rate = priceOf(usage.model, usage.input_tokens + read + usage.cache_creation_input_tokens)
-  const write = ttlOf(base, setting) >= HOUR ? rate?.write1h : rate?.write5m
-  const loss: Loss = { at, lost, cause, gap, ...(rate === null || write === undefined ? {} : { cost: (lost * (write - rate.read)) / 1e6 }) }
+  const rewritten = Math.min(lost, usage.cache_creation_input_tokens)
+  const loss: Loss = {
+    at, lost, cause, gap,
+    ...(rate === null ? {} : { cost: { write5m: (rewritten * (rate.write5m - rate.read)) / 1e6, write1h: (rewritten * (rate.write1h - rate.read)) / 1e6 } }),
+  }
   return { ...next, losses: [loss, ...cache.losses].slice(0, HISTORY) }
 }
 

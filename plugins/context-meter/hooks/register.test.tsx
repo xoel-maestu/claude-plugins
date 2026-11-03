@@ -736,7 +736,7 @@ test("/context-meter <n> or <name>: that agent's card, with its own rows, cost a
     // Haiku 5.5 up to 100k: (4 × 0.10 + 4,846 × 0.01 + 314 × 0.50 + 42,795 × 0.125) / 1e6 = $0.00556.
     'Cost           ≈ $0.0056 at API list prices, from its token counts',
     // Uncached, its 47,645 input tokens would cost $0.0048; with 42,795 written at 5m they cost $0.0054.
-    'Cache saved    ≈ −$0.0006 (input 13% dearer than uncached)',
+    'Cache saved    ≈ −$0.0006 (13% more than without the cache)',
     `Cache          active until ${clockTime(MIN + 5 * MIN)} (in 5m, TTL 5m?)`,
     // Getting the 17,641 lost tokens back: written again at 5m instead of read, (0.125 − 0.01) per MTok.
     `Cache losses   ${clockTime(MIN)}  −17.6k  ≈ $0.0020  invalidated (prompt or tools changed)`,
@@ -984,9 +984,9 @@ test("what the cache saved over the session on the main card: main and agents, e
   // Uncached: 201,020 × 2 + 40,504 × 0.10 = 406,090.4 µ$. Cost: main 20 × 2 + 100,000 × 0.10 + 101,000 × 4
   // = 414,040, a1 2,762.9: 416,802.9 µ$. Saved: −10,712.5 µ$, 3% more.
   const row = async (args = '') => ((await run($, args)).text ?? '').split('\n').find(line => line.startsWith('Cache saved'))
-  expect(await row()).toBe('Cache saved    ≈ −$0.0107 (input 3% dearer than uncached)')
+  expect(await row()).toBe('Cache saved    ≈ −$0.0107 (3% more than without the cache)')
   // a1 alone: uncached 40,504 × 0.10 = 4,050.4 µ$, cost 0.4 + 200 + 2,562.5 = 2,762.9 µ$: saved 1,287.5 µ$, 32%.
-  expect(await row('1')).toBe('Cache saved    ≈ $0.0013 (input 32% cheaper than uncached)')
+  expect(await row('1')).toBe('Cache saved    ≈ $0.0013 (32% less than without the cache)')
   const narrow = (await cardIn(await band($, 55))).rows.find(line => line.includes('Cache saved'))
   expect(narrow?.trim()).toBe('Cache saved    ≈ −$0.0107')
 })
@@ -1013,7 +1013,7 @@ test("two agents on different TTLs: each one's writes at its own on the main car
   }
   // Uncached: 10 × 2 + 100,004 × 0.10 = 10,020.4 µ$. Cost: 20 + a1 (0.2 + 50,000 × 0.125) + a2 (0.2 + 50,000 × 0.20) = 16,270.4 µ$.
   const row = ((await run($, '')).text ?? '').split('\n').find(text => text.startsWith('Cache saved'))
-  expect(row).toBe('Cache saved    ≈ −$0.0063 (input 62% dearer than uncached)')
+  expect(row).toBe('Cache saved    ≈ −$0.0063 (62% more than without the cache)')
 })
 
 test("Haiku 5.5's long-prompt rates price what the cache saved too", async ($, on) => {
@@ -1025,7 +1025,7 @@ test("Haiku 5.5's long-prompt rates price what the cache saved too", async ($, o
   await respond($, w, counts(2, 150_000, 0, 10, 'claude-haiku-5-5'), 'a1')
   const row = ((await run($, '1')).text ?? '').split('\n').find(text => text.startsWith('Cache saved'))
   // Uncached 150,002 × 0.50 = 75,001 µ$; cost 2 × 0.50 + 150,000 × 0.05 = 7,501 µ$: saved 67,500 µ$, 90%.
-  expect(row).toBe('Cache saved    ≈ $0.0675 (input 90% cheaper than uncached)')
+  expect(row).toBe('Cache saved    ≈ $0.0675 (90% less than without the cache)')
 })
 
 test('the cache saved in Spanish; none with a model off the price table', { options: { language: 'es' } }, async ($, on) => {
@@ -1034,7 +1034,7 @@ test('the cache saved in Spanish; none with a model off the price table', { opti
   await respond($, w, counts(10, 0, 100_000, 100, 'claude-sonnet-5-5'))
   await respond($, w, counts(10, 100_000, 0, 100, 'claude-sonnet-5-5'))
   const rows = ((await run($, '')).text ?? '').split('\n')
-  expect(rows.find(line => line.startsWith('Ahorro'))).toMatch(/^Ahorro de caché +≈ \$0\.\d{4} \(entrada un \d+% más barata que sin caché\)$/)
+  expect(rows.find(line => line.startsWith('Ahorro'))).toMatch(/^Ahorro de caché +≈ \$0\.\d{4} \(un \d+% menos que sin caché\)$/)
   await respond($, w, counts(1, 1, 1, 1))
   expect(((await run($, '')).text ?? '').split('\n').some(line => line.startsWith('Ahorro'))).toBe(false)
 })
@@ -1387,13 +1387,32 @@ test("each loss's cost in a column, aligned; a narrow band keeps the cost and sh
   await $.session.compact({ trigger: 'manual', messages: [summary] })
   await w.clock.advance(MIN)
   await respond($, w, counts(5, 8000, 2000, 10, 'claude-sonnet-5-5'))
-  // 5m (no rate limits): 80,000 × 2.40 = $0.192; 92,000 × 2.40 = $0.2208.
+  // 5m (no rate limits): 80,000 rewritten × 2.40 = $0.192; the compaction lost 92,000 but wrote 2,000: × 2.40 = $0.0048.
   expect((await cacheLines($)).slice(1)).toEqual([
-    `Cache losses   ${clockTime(2 * MIN)}  −92k  ≈ $0.2208  /compact`,
+    `Cache losses   ${clockTime(2 * MIN)}  −92k  ≈ $0.0048  /compact`,
     `               ${clockTime(MIN)}  −80k  ≈ $0.1920  invalidated (prompt or tools changed)`,
   ])
   const narrow = (await cardIn(await band($, 60))).rows.filter(row => row.includes('≈ $0.'))
   expect(narrow.map(row => row.trim().replace(/ +/g, ' '))).toContain(`${clockTime(MIN)} −80k ≈ $0.1920 invalidated`)
+})
+
+test('a loss with no cost (a model off the price table) leaves its cell blank, the causes aligned; the cost follows the TTL the transcript shows later', async ($, on) => {
+  const w = world(on, fill(62))
+  const file = transcript(on)
+  await startWithTranscript($)
+  await respond($, w, counts(5, 0, 100_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 20_000, 80_000, 10, 'claude-sonnet-5-5'))
+  await w.clock.advance(MIN)
+  await respond($, w, counts(5, 0, 100_000, 10, 'other-model'))
+  expect((await cacheLines($)).slice(1)).toEqual([
+    `Cache losses   ${clockTime(2 * MIN)}  −100k             model changed`,
+    `               ${clockTime(MIN)}  −80k   ≈ $0.1920  invalidated (prompt or tools changed)`,
+  ])
+  // The transcript then shows the writes were 1h: the loss is priced at it, 80,000 × 3.90.
+  file.lines.push(entry(0, 100_000))
+  await stop($)
+  expect((await cacheLines($))[2]).toBe(`               ${clockTime(MIN)}  −80k   ≈ $0.3120  invalidated (prompt or tools changed)`)
 })
 
 test('the card shows the 5 newest losses, /context-meter all 10', async ($, on) => {

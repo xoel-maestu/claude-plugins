@@ -196,11 +196,21 @@ test("a loss's cost: the lost tokens written again at the TTL in force instead o
   // Sonnet 5.5, 5m (no subscription): 80,000 lost × (2.50 − 0.10) per MTok = $0.192.
   let cache = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, 'auto')
   cache = observe(cache, u(20_000, 80_000, 'claude-sonnet-5-5'), 60_000, false, 'auto')
-  expect(Math.abs(cache.losses[0]!.cost! - 80_000 * 2.4 / 1e6) < 1e-12).toBe(true)
-  // 1h set: (4 − 0.10).
-  let hour = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, '1h')
-  hour = observe(hour, u(20_000, 80_000, 'claude-sonnet-5-5'), 60_000, false, '1h')
-  expect(Math.abs(hour.losses[0]!.cost! - 80_000 * 3.9 / 1e6) < 1e-12).toBe(true)
+  expect(Math.abs(cache.losses[0]!.cost!.write5m - 80_000 * 2.4 / 1e6) < 1e-12).toBe(true)
+  expect(Math.abs(cache.losses[0]!.cost!.write1h - 80_000 * 3.9 / 1e6) < 1e-12).toBe(true)
+  // Only what was written again: lost 80,000, wrote 5,000 (a compaction's summary).
+  let shorter = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, 'auto')
+  shorter = observe(shorter, u(20_000, 5000, 'claude-sonnet-5-5'), 60_000, false, 'auto')
+  expect(Math.abs(shorter.losses[0]!.cost!.write5m - 5000 * 2.4 / 1e6) < 1e-12).toBe(true)
+  // Haiku 5.5 over 100,000 input tokens: the long rates, (0.625 − 0.05).
+  let long = observe(EMPTY, u(0, 200_000, 'claude-haiku-5-5'), 0, false, 'auto')
+  long = observe(long, u(50_000, 150_000, 'claude-haiku-5-5'), 60_000, false, 'auto')
+  expect(Math.abs(long.losses[0]!.cost!.write5m - 150_000 * 0.575 / 1e6) < 1e-12).toBe(true)
+  // Another model: priced at the model that answered, Opus 5.5 (5 − 0.20).
+  let switched = observe(EMPTY, u(0, 100_000, 'claude-sonnet-5-5'), 0, false, 'auto')
+  switched = observe(switched, u(0, 100_000, 'claude-opus-5-5'), 60_000, false, 'auto')
+  expect(switched.losses[0]!.cause).toBe('model')
+  expect(Math.abs(switched.losses[0]!.cost!.write5m - 100_000 * 4.8 / 1e6) < 1e-12).toBe(true)
   // A model the table lacks: no cost.
   let other = observe(EMPTY, u(0, 100_000, 'other'), 0, false, 'auto')
   other = observe(other, u(0, 100_000, 'other'), 60_000, false, 'auto')
