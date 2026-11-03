@@ -36,6 +36,8 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
     rateLimits: [] as never[],
     /** How long the model takes to answer a step, on the mock clock. */
     stepMs: 0,
+    /** The agents `$.agent.list()` names. */
+    agentList: [] as { id: string; type: string; name?: string; description: string; status: string }[],
   }
   const clock = mock.clock(on, { now: 0 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -66,6 +68,7 @@ function world (on: On, context: SessionContextUsage = fill(), breakdown: Breakd
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: live.usage }
   })
   on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('agent.list', () => ({ value: live.agentList }) as never)
   // The engine's own node: a keyed Box when it has mode labels, its bare node otherwise.
   on('ui.render', ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
@@ -508,6 +511,146 @@ test("a compaction's own summarizer request adds nothing to the tokens", async (
   const before = await tokenLines($)
   await $.session.compact({ trigger: 'manual', messages: [summary] })
   expect(await tokenLines($)).toEqual(before)
+})
+
+/** The subagent rows /context-meter prints: from the Agents header to the end. */
+const agentLines = async ($: Engine) => {
+  const rows = await commandLines($)
+  const at = rows.findIndex(line => /^Agent(s|es) \(/.test(line))
+  return at === -1 ? [] : rows.slice(at)
+}
+
+test("a subagent's responses fill its row; a fork no list names counts nowhere; main is unchanged", async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [
+    { id: 'a1', type: 'Explore', description: 'Count files', status: 'running' },
+    { id: 'a2', type: 'general-purpose', name: 'reviewer', description: 'Review', status: 'running' },
+  ]
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  const main = await tokenLines($)
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(2, 17_641, 1335, 148, 'claude-haiku-5-5'), 'a1')
+  await respond($, w, counts(10, 0, 9000, 50, 'claude-sonnet-5-5'), 'a2')
+  await respond($, w, counts(5000, 5000, 5000, 5000), 'memory-fork')
+  expect(await tokenLines($)).toEqual(main)
+  expect(await agentLines($)).toEqual([
+    'Agents (2)     Requests   Input   Cache hit   Output   Model',
+    'reviewer       1          9k      0%          50       sonnet 5.5',
+    'Count files    2          36.6k   61%         314      haiku 5.5',
+    'All agents     3          45.6k   49%         364',
+    'With agents                       57%',
+  ])
+})
+
+test('a name past 24 characters ends in …', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [{ id: 'a1', type: 'Explore', description: 'Count every TypeScript file in hooks', status: 'running' }]
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  expect((await agentLines($))[1]).toMatch(/^Count every TypeScript … +1 /)
+})
+
+test('a reload keeps the agents in $.state; a new session start empties them', async ($, on) => {
+  // What the plugin wrote before the reload, for this session's start.
+  on('state.get', ($, e, next) => (e as { key: string }).key === 'agents'
+    ? { value: { value: {
+        startedAt: 0,
+        agents: [{ id: 'a1', label: 'Explore', model: 'claude-haiku-5-5', input: 2, output: 166, cacheRead: 4846, cacheWrite: 12_795, requests: 1, at: 1 }],
+        total: { input: 2, output: 166, cacheRead: 4846, cacheWrite: 12_795 },
+        requests: 1,
+        count: 1,
+      }, version: 3 } }
+    : next(e))
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  expect((await agentLines($))[1]).toMatch(/^Explore +1 +17.6k +27% +166 +haiku 5.5$/)
+})
+
+test('a session started anew (another start) empties the agents', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [{ id: 'a1', type: 'Explore', description: '', status: 'running' }]
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(1, 0, 0, 1), 'a1')
+  w.live.startedAt = 99
+  await startSession($)
+  expect(await agentLines($)).toEqual([])
+})
+
+test('an agent once named keeps counting after the list drops it', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [{ id: 'a1', type: 'Explore', description: '', status: 'running' }]
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(1, 0, 0, 1), 'a1')
+  w.live.agentList = []
+  await respond($, w, counts(1, 0, 0, 1), 'a1')
+  expect((await agentLines($))[1]).toMatch(/^Explore +2 /)
+})
+
+test('no subagent: no Agents section', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(1, 1, 1, 1), 'unlisted')
+  expect(await agentLines($)).toEqual([])
+})
+
+test('the card lists the 5 most recent agents, /context-meter every one; /clear empties them', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = Array.from({ length: 7 }, (_, i) => ({ id: `a${i}`, type: `type-${i}`, description: '', status: 'completed' }))
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  for (let i = 0; i < 7; i++) {
+    await w.clock.advance(1000)
+    await respond($, w, counts(1, 0, 0, 1), `a${i}`)
+  }
+  // The band does not wait for the recordings; the command does.
+  await runCommand($)
+  const { rows } = await cardIn(await band($, 115))
+  const labels = rows.map(row => row.slice(1, 12).trim()).filter(text => /^type-|^Agents/.test(text))
+  expect(labels).toEqual(['Agents (7)', 'type-6', 'type-5', 'type-4', 'type-3', 'type-2'])
+  expect((await agentLines($)).filter(line => line.startsWith('type-'))).toHaveLength(7)
+  await $.session.end({ reason: 'clear' } as never)
+  expect(await agentLines($)).toEqual([])
+})
+
+test('a narrow band drops Model, then Output, then Requests from the agents table', async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [{ id: 'a1', type: 'Explore', description: '', status: 'running' }]
+  await startSession($)
+  await measure($, 62)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  await runCommand($)
+  const headerAt = async (columns: number) => {
+    const { rows } = await cardIn(await band($, columns))
+    return rows.find(row => row.includes('Agents (1)'))?.trim().replace(/ +/g, ' ')
+  }
+  expect(await headerAt(70)).toBe('Agents (1) Requests Input Cache hit Output Model')
+  expect(await headerAt(60)).toBe('Agents (1) Requests Input Cache hit Output')
+  expect(await headerAt(50)).toBe('Agents (1) Requests Input Cache hit')
+  expect(await headerAt(40)).toBe('Agents (1) Input Cache hit')
+  // Where not even Input and Cache hit fit, the section goes rather than cut a figure.
+  expect(await headerAt(30)).toBeUndefined()
+})
+
+test('the agents section in Spanish', { options: { language: 'es' } }, async ($, on) => {
+  const w = world(on, fill(62))
+  w.live.agentList = [{ id: 'a1', type: 'Explore', description: '', status: 'running' }]
+  await startSession($)
+  await respond($, w, counts(0, 9000, 1000, 100))
+  await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
+  expect((await agentLines($)).map(line => line.replace(/ +/g, ' '))).toEqual([
+    'Agentes (1) Peticiones Entrada Acierto Salida Modelo',
+    'Explore 1 17.6k 27% 166 haiku 5.5',
+    'Todos los agentes 1 17.6k 27% 166',
+    'Con agentes 50%',
+  ])
 })
 
 test('a response without usage counts nothing; before any response there are no token rows', async ($, on) => {

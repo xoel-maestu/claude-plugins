@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage, SessionCost, Timer, TurnUsage } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage, SessionCost, Timer, TurnUsage } from 'claude-code'
 
 import type { ContextMeterFill } from '../types'
 
@@ -9,6 +9,7 @@ import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
+import { EMPTY as NO_AGENTS, add as addAgent, since as agentsSince } from './agents'
 import { EMPTY, add, since } from './ledger'
 import { MAX_READ, TAIL, completeLines, lastResponse } from './transcript'
 
@@ -18,6 +19,7 @@ const compactAt = atom({ plugin: 'context-meter', key: 'compactAt' } as const, n
 const ledger = atom({ plugin: 'context-meter', key: 'ledger' } as const, EMPTY)
 const cost = atom({ plugin: 'context-meter', key: 'cost' } as const, null as number | null)
 const cache = atom({ plugin: 'context-meter', key: 'cache' } as const, NO_CACHE)
+const agents = atom({ plugin: 'context-meter', key: 'agents' } as const, NO_AGENTS)
 // The time the card's countdown is drawn for: written by the tick only when the cache line changes.
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 
@@ -168,10 +170,11 @@ async function showCost ($: EngineInterface, next: SessionCost | undefined) {
   if ((await read($, cost)) !== usd) await update($, cost, () => usd)
 }
 
-/** Empties the ledger and the cache when they count from another session start than the live one (/clear, another session). */
+/** Empties the ledger, the agents and the cache when they count from another session start than the live one (/clear, another session). */
 async function keepSession ($: EngineInterface, startedAt: number) {
-  const [kept, cached] = await Promise.all([read($, ledger), read($, cache)])
+  const [kept, cached, others] = await Promise.all([read($, ledger), read($, cache), read($, agents)])
   if (since(kept, startedAt) !== kept) await update($, ledger, () => ({ ...EMPTY, startedAt }))
+  if (agentsSince(others, startedAt) !== others) await update($, agents, () => ({ ...NO_AGENTS, startedAt }))
   const current = cacheSince(cached, startedAt)
   if (current !== cached) await update($, cache, state => cacheSince(state, startedAt))
   hasCache = current.last !== undefined
@@ -246,6 +249,8 @@ async function seedFromStore ($: EngineInterface) {
 
 /** The recordings of main-thread responses, one after another. */
 let recording: Promise<void> = Promise.resolve()
+/** The agents `$.agent.list()` has named, by id: read once each. */
+const seenAgents = new Map<string, AgentInfo>()
 
 /** Queued after the recordings before it, so a compaction or a /clear lands between the right requests. */
 const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(work).then(() => {}, () => {}) }
@@ -270,6 +275,22 @@ async function record ($: EngineInterface, usage: TurnUsage, at: number) {
 }
 
 /**
+ * A subagent's response to a request sent at `at`: added to its row when `$.agent.list()` names the
+ * loop. A loop it does not name is one of the engine's own forks (memory, a summarizer), not counted.
+ */
+async function recordAgent ($: EngineInterface, agentId: string, usage: TurnUsage, at: number) {
+  const { startedAt } = await $.session.usage()
+  // The list is read only for an agent not seen yet: a known one stays counted once it is done.
+  let info = seenAgents.get(agentId)
+  if (info === undefined) {
+    info = (await $.agent.list().catch(() => [])).find(agent => agent.id === agentId)
+    if (info === undefined) return
+    seenAgents.set(agentId, info)
+  }
+  await update($, agents, state => addAgent(agentsSince(state, startedAt), info, usage, at))
+}
+
+/**
  * Rate limits from any usage read mark the session a subscription: the first request may come before
  * the host has any, and the TTL in force (worked out when drawn) then turns 1h for it too.
  */
@@ -281,11 +302,11 @@ function seeRateLimits ($: EngineInterface, rateLimits: readonly unknown[]) {
 
 /** Everything the card shows; `now` is the time the countdown is drawn for, the tick's unless given. */
 async function viewOf ($: EngineInterface, now?: number): Promise<CardView> {
-  const [shown, threshold, counted, spent, cached, tick] = await Promise.all([
-    read($, fill), read($, compactAt), read($, ledger), read($, cost), read($, cache), read($, drawnAt),
+  const [shown, threshold, counted, spent, cached, tick, others] = await Promise.all([
+    read($, fill), read($, compactAt), read($, ledger), read($, cost), read($, cache), read($, drawnAt), read($, agents),
   ])
   const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
-  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick }
+  return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others }
 }
 
 /**
@@ -343,6 +364,7 @@ export const register: Register = (on, options) => {
   estimatedIn = -1
   hintWidth = 0
   transcriptPath = undefined
+  seenAgents.clear()
   transcriptSize = -1
   isTranscriptDue = false
 
@@ -368,9 +390,10 @@ export const register: Register = (on, options) => {
       stretch += 1
       isCompactAtStale = true
       await update($, fill, () => null)
-      // The counts start over; the next response takes the new session start.
-      await update($, ledger, () => EMPTY)
       enqueue(async () => {
+        // The counts start over after the responses already queued; the next takes the new session start.
+        await update($, ledger, () => EMPTY)
+        await update($, agents, () => NO_AGENTS)
         const now = await $.clock.now()
         // The TTL setting and the billing do not change with /clear: those readings are kept.
         await update($, cache, state => cleared(now, state))
@@ -390,18 +413,19 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Each response of the main thread feeds the ledger. A step with an agentId is another loop's
-  // (a subagent, a teammate, a workflow agent, or the engine's own forks: compaction, memory) and
-  // counts nothing. The stream is passed on untouched; the counts are read from its result.
+  // Each response of the main thread feeds the ledger. A step with an agentId is another loop's: a
+  // subagent or a teammate (`$.agent.list()` names it) feeds the agents' rows; a workflow agent or the
+  // engine's own forks (memory) carry ids no list names and count nothing. The stream is passed on untouched; the counts are read from its result.
   // The result goes back at once: the recording runs after it, chained so steps add in order.
   // A compaction's summarizer request is no step: it reaches only session.compact (seen in a real
   // session, Claude Code 2.1.317), so it never counts as the session's work.
   on('turn.step', async function* ($, e, next) {
-    const sentAt = e.agentId === undefined ? await $.clock.now() : 0
+    const sentAt = await $.clock.now()
     const result = yield* next(e)
     const usage = result.usage
-    if (e.agentId === undefined && usage !== null) {
-      enqueue(() => record($, usage, sentAt))
+    const agentId = e.agentId
+    if (usage !== null) {
+      enqueue(() => (agentId === undefined ? record($, usage, sentAt) : recordAgent($, agentId, usage, sentAt)))
     }
     return result
   })

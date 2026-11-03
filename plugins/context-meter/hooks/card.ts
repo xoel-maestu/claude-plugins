@@ -1,5 +1,7 @@
 import type { ContextMeterFill } from '../types'
 
+import { KEPT, modelName, withMain } from './agents'
+import type { Agents } from './agents'
 import { FIVE_MINUTES, HISTORY, HOUR, statusOf } from './cache'
 import type { Cache, Loss } from './cache'
 import { split } from './fit'
@@ -12,6 +14,10 @@ export type Language = 'en' | 'es'
 export const CARD_WIDTH = 40
 /** How many losses the card shows; /context-meter prints the whole history. */
 export const CARD_LOSSES = 5
+/** How many subagents the card lists, most recently active first; /context-meter lists every kept one. */
+export const CARD_AGENTS = 5
+/** An agent's label longer than this is cut, with `…`: it is a name, not a figure. */
+const AGENT_LABEL = 24
 /** A border column and a padding column at each side. */
 const FRAME = 4
 const GAP = '   '
@@ -23,6 +29,16 @@ const LAYOUTS: Column[][] = [
   ['input', 'cacheRead', 'cacheWrite', 'uncached', 'output'],
   ['input', 'cacheRead', 'cacheWrite', 'output'],
   ['input', 'cacheRead', 'output'],
+]
+
+/** The subagents table's columns: Input as in the token table, Cache hit its share read from cache. */
+type AgentColumn = 'requests' | 'input' | 'hit' | 'output' | 'model'
+/** Widest first: Model goes first where the band is narrow, then Output, then Requests. */
+const AGENT_LAYOUTS: AgentColumn[][] = [
+  ['requests', 'input', 'hit', 'output', 'model'],
+  ['requests', 'input', 'hit', 'output'],
+  ['requests', 'input', 'hit'],
+  ['input', 'hit'],
 ]
 
 type Words = {
@@ -48,6 +64,10 @@ type Words = {
   /** Where the full form does not fit: the expiry and the TTL, and each cause in a word or two. */
   activeShort: (until: string, ttl: string) => string
   causesShort: Record<Exclude<Loss['cause'], 'expired'>, string> & { expired: (gap: string) => string }
+  agents: (count: number) => string
+  agentColumns: Record<AgentColumn, string>
+  allAgents: string
+  withAgents: string
 }
 
 const WORDS: Record<Language, Words> = {
@@ -75,6 +95,10 @@ const WORDS: Record<Language, Words> = {
     causes: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap} > TTL`, invalidated: 'invalidated (prompt or tools changed)' },
     activeShort: (until, ttl) => `until ${until} (TTL ${ttl})`,
     causesShort: { compact: '/compact', model: 'model changed', expired: gap => `idle ${gap}`, invalidated: 'invalidated' },
+    agents: count => `Agents (${count})`,
+    agentColumns: { requests: 'Requests', input: 'Input', hit: 'Cache hit', output: 'Output', model: 'Model' },
+    allAgents: 'All agents',
+    withAgents: 'With agents',
   },
   es: {
     context: 'Contexto',
@@ -100,6 +124,10 @@ const WORDS: Record<Language, Words> = {
     causes: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap} > TTL`, invalidated: 'invalidada (cambió el prompt o las herramientas)' },
     activeShort: (until, ttl) => `hasta las ${until} (TTL ${ttl})`,
     causesShort: { compact: '/compact', model: 'cambio de modelo', expired: gap => `inactiva ${gap}`, invalidated: 'invalidada' },
+    agents: count => `Agentes (${count})`,
+    agentColumns: { requests: 'Peticiones', input: 'Entrada', hit: 'Acierto', output: 'Salida', model: 'Modelo' },
+    allAgents: 'Todos los agentes',
+    withAgents: 'Con agentes',
   },
 }
 
@@ -166,6 +194,7 @@ export type CardView = {
   ttl?: number
   isTtlInferred?: boolean
   now?: number
+  agents?: Agents
 }
 
 const widthOfRow = (row: Row) => row.reduce((sum, cell) => sum + cell.text.length, 0)
@@ -264,6 +293,57 @@ function cacheRows (cache: Cache, ttl: number, isTtlInferred: boolean, now: numb
   return [...rows, ...lines.map((line, i): Draft => [label(i === 0 ? words.losses : ''), ...line])]
 }
 
+const hitText = (counts: Counts) => {
+  const hit = hitRate(counts)
+  return hit === null ? '–' : `${Math.round(hit * 100)}%`
+}
+
+const cut = (text: string, width: number) => (text.length <= width ? text : `${text.slice(0, width - 1)}…`)
+
+/**
+ * The subagents section: a dim header (`Agents (n)`, every agent of the session counted) over the
+ * columns, a row per agent (at most `maxAgents`, most recently active first), the total over every
+ * agent and the hit rate of the main thread and the agents together. In the widest of the layouts
+ * that fits `room`; none where none fits.
+ */
+function agentRows (agents: Agents, main: Counts, words: Words, room: number, labelWidth: number, maxAgents: number): Row[] {
+  const shown = agents.agents.slice(0, maxAgents)
+  const labels = [words.agents(agents.count), ...shown.map(agent => cut(agent.label, AGENT_LABEL)), words.allAgents, words.withAgents]
+  const width = Math.max(labelWidth, ...labels.map(text => text.length + GAP.length))
+  type Line = { label: string; values: Partial<Record<AgentColumn, string>> }
+  const valuesOf = (counts: Counts, requests: number, model?: string): Line['values'] => ({
+    requests: String(requests),
+    input: tokens(valueOf(counts, 'input')),
+    hit: hitText(counts),
+    output: tokens(counts.output),
+    ...(model === undefined ? {} : { model: modelName(model) }),
+  })
+  const lines: Line[] = [
+    ...shown.map(agent => ({ label: cut(agent.label, AGENT_LABEL), values: valuesOf(agent, agent.requests, agent.model) })),
+    { label: words.allAgents, values: valuesOf(agents.total, agents.requests) },
+    { label: words.withAgents, values: { hit: hitText(withMain(agents, main)) } },
+  ]
+  for (const columns of AGENT_LAYOUTS) {
+    const widths = columns.map(column => Math.max(words.agentColumns[column].length, ...lines.map(line => (line.values[column] ?? '').length)))
+    const cells = (texts: string[], tone: Tone): Cell[] =>
+      texts.map((text, i) => ({ text: i < texts.length - 1 ? text.padEnd(widths[i]!) + GAP : text, tone }))
+    const rows: Row[] = [
+      [{ text: words.agents(agents.count).padEnd(width), tone: 'plain' }, ...cells(columns.map(column => words.agentColumns[column]), 'dim')],
+      ...lines.map((line): Row => [{ text: line.label.padEnd(width), tone: 'plain' }, ...cells(columns.map(column => line.values[column] ?? ''), 'plain')]),
+    ]
+    const trimmed = rows.map(row => {
+      // A row's blank trailing cells (the total has no model) are not drawn.
+      const out = [...row]
+      while (out.length > 1 && out.at(-1)!.text.trim() === '') out.pop()
+      const tail = out.at(-1)!
+      out[out.length - 1] = { ...tail, text: tail.text.trimEnd() }
+      return out
+    })
+    if (Math.max(...trimmed.map(widthOfRow)) <= room) return trimmed
+  }
+  return []
+}
+
 /** `$4.12`; under a cent from its first significant digit, `$0.004`, `$0.0004`. */
 export function usdText (usd: number): string {
   // Rounded first, so an amount that rounds up to a cent (0.00999) reads as cents.
@@ -293,8 +373,8 @@ function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth
  * shows the amount alone. The cache rows come last, at most `maxLosses` losses, cut at the border
  * where the band is short. Null with no fill.
  */
-export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES): Card | null {
-  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, isTtlInferred = false, now = 0 } = view
+export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES, maxAgents = CARD_AGENTS): Card | null {
+  const { fill, compactAt, ledger, cost = null, cache, ttl = FIVE_MINUTES, isTtlInferred = false, now = 0, agents } = view
   if (fill === null) return null
   const words = WORDS[language]
   const mark = fill.isEstimate ? '~' : ''
@@ -315,7 +395,9 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   const costDraft = table !== undefined && cost !== null && Number.isFinite(cost) && cost > 0
     ? costRow(cost, cache?.isSubscription === true, words, labelWidth)
     : undefined
-  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow))
+  const agentSection = agents === undefined || agents.count === 0 ? []
+    : agentRows(agents, ledger?.total ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, words, room, labelWidth, maxAgents)
+  const wanted = Math.max(0, ...tokenRows.map(widthOfRow), ...(costDraft === undefined ? [] : [widthOfRow(costDraft)]), ...extra.map(widthOfRow), ...agentSection.map(widthOfRow))
   const content = Math.min(room, Math.max(CARD_WIDTH - FRAME, wanted))
 
   const figures: Row = [{ text: words.context, tone: 'plain' }]
@@ -331,6 +413,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
     rows.push(shorten(costDraft, content))
   }
   rows.push(...extra.map(row => shorten(row, content)))
+  if (agentSection.length > 0) rows.push([], ...agentSection)
 
   const fitted = rows.map(row => fitRow(row, content))
   return { width: content + FRAME, content, height: fitted.length + 2, rows: fitted }
@@ -338,7 +421,7 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
 
 /** The card's rows as plain text, for /context-meter: at its widest, every loss of the history. */
 export function cardText (view: CardView, language: Language): string {
-  const card = cardOf(view, language, Infinity, HISTORY)
+  const card = cardOf(view, language, Infinity, HISTORY, KEPT)
   if (card === null) return WORDS[language].none
   return card.rows.map(row => row.map(cell => cell.text).join('').trimEnd()).join('\n')
 }
