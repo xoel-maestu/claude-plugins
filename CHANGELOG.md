@@ -4,7 +4,7 @@
 
 ### context-meter
 
-- An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache hit, output, model), the total over every subagent, and the hit rate with the main thread. Shown once a subagent has answered; the engine's own forks are left out.
+- An Agents section in the card and in `/context-meter`: a row per subagent (requests, input, cache read, cache write, uncached, output, cache hit, model), the total over every subagent, and Overall: the main thread and the subagents together. Shown once a subagent has answered; the engine's own forks are left out.
 - The cache countdown and the idle time of a loss are timed from the start of each request instead of its end, as Anthropic's prompt caching docs time a cache entry. A long response no longer pushes the expiry later than it is. The first request after upgrading measures its idle time from the end of the last request recorded by 1.0.0.
 - The README states which caching rules come from Anthropic's docs and which are the plugin's own (the 1024-token noise floor), and that a compaction's summarizer request is not counted.
 

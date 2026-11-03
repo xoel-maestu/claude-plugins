@@ -535,11 +535,11 @@ test("a subagent's responses fill its row; a fork no list names counts nowhere; 
   await respond($, w, counts(5000, 5000, 5000, 5000), 'memory-fork')
   expect(await tokenLines($)).toEqual(main)
   expect(await agentLines($)).toEqual([
-    'Agents (2)     Requests   Input   Cache hit   Output   Model',
-    'reviewer       1          9k      0%          50       sonnet 5.5',
-    'Count files    2          36.6k   61%         314      haiku 5.5',
-    'All agents     3          45.6k   49%         364',
-    'With agents                       57%',
+    'Agents (2)     Requests   Input   Cache read   Cache write   Uncached   Output   Cache hit   Model',
+    'reviewer       1          9k      0            9k            10         50       0%          sonnet 5.5',
+    'Count files    2          36.6k   22.5k        14.1k         4          314      61%         haiku 5.5',
+    'All agents     3          45.6k   22.5k        23.1k         14         364      49%',
+    'Overall        4          55.6k   31.5k        24.1k         14         464      57%',
   ])
 })
 
@@ -566,7 +566,7 @@ test('a reload keeps the agents in $.state; a new session start empties them', a
   const w = world(on, fill(62))
   await startSession($)
   await respond($, w, counts(0, 9000, 1000, 100))
-  expect((await agentLines($))[1]).toMatch(/^Explore +1 +17.6k +27% +166 +haiku 5.5$/)
+  expect((await agentLines($))[1]).toMatch(/^Explore +1 +17.6k +4.8k +12.8k +2 +166 +27% +haiku 5.5$/)
 })
 
 test('a session started anew (another start) empties the agents', async ($, on) => {
@@ -619,7 +619,7 @@ test('the card lists the 5 most recent agents, /context-meter every one; /clear 
   expect(await agentLines($)).toEqual([])
 })
 
-test('a narrow band drops Model, then Output, then Requests from the agents table', async ($, on) => {
+test('a narrow band drops Model, Uncached, Cache write, Output, Requests, then Cache read from the agents table', async ($, on) => {
   const w = world(on, fill(62))
   w.live.agentList = [{ id: 'a1', type: 'Explore', description: '', status: 'running' }]
   await startSession($)
@@ -631,12 +631,15 @@ test('a narrow band drops Model, then Output, then Requests from the agents tabl
     const { rows } = await cardIn(await band($, columns))
     return rows.find(row => row.includes('Agents (1)'))?.trim().replace(/ +/g, ' ')
   }
-  expect(await headerAt(70)).toBe('Agents (1) Requests Input Cache hit Output Model')
-  expect(await headerAt(60)).toBe('Agents (1) Requests Input Cache hit Output')
-  expect(await headerAt(50)).toBe('Agents (1) Requests Input Cache hit')
-  expect(await headerAt(40)).toBe('Agents (1) Input Cache hit')
+  expect(await headerAt(110)).toBe('Agents (1) Requests Input Cache read Cache write Uncached Output Cache hit Model')
+  expect(await headerAt(100)).toBe('Agents (1) Requests Input Cache read Cache write Uncached Output Cache hit')
+  expect(await headerAt(90)).toBe('Agents (1) Requests Input Cache read Cache write Output Cache hit')
+  expect(await headerAt(80)).toBe('Agents (1) Requests Input Cache read Output Cache hit')
+  expect(await headerAt(65)).toBe('Agents (1) Requests Input Cache read Cache hit')
+  expect(await headerAt(55)).toBe('Agents (1) Input Cache read Cache hit')
+  expect(await headerAt(45)).toBe('Agents (1) Input Cache hit')
   // Where not even Input and Cache hit fit, the section goes rather than cut a figure.
-  expect(await headerAt(30)).toBeUndefined()
+  expect(await headerAt(35)).toBeUndefined()
 })
 
 test('the agents section in Spanish', { options: { language: 'es' } }, async ($, on) => {
@@ -646,10 +649,10 @@ test('the agents section in Spanish', { options: { language: 'es' } }, async ($,
   await respond($, w, counts(0, 9000, 1000, 100))
   await respond($, w, counts(2, 4846, 12_795, 166, 'claude-haiku-5-5'), 'a1')
   expect((await agentLines($)).map(line => line.replace(/ +/g, ' '))).toEqual([
-    'Agentes (1) Peticiones Entrada Acierto Salida Modelo',
-    'Explore 1 17.6k 27% 166 haiku 5.5',
-    'Todos los agentes 1 17.6k 27% 166',
-    'Con agentes 50%',
+    'Agentes (1) Peticiones Entrada Caché leída Caché escrita Sin caché Salida Acierto Modelo',
+    'Explore 1 17.6k 4.8k 12.8k 2 166 27% haiku 5.5',
+    'Todos los agentes 1 17.6k 4.8k 12.8k 2 166 27%',
+    'En conjunto 2 27.6k 13.8k 13.8k 2 266 50%',
   ])
 })
 
