@@ -9,7 +9,8 @@ import { cacheStatus, cardOf, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
-import { EMPTY as NO_AGENTS, add as addAgent, seeTtl, since as agentsSince } from './agents'
+import { EMPTY as NO_AGENTS, add as addAgent, pathOf, seeTtl, since as agentsSince } from './agents'
+import { windowOf } from './pricing'
 import { EMPTY, add, since } from './ledger'
 import { MAX_READ, TAIL, agentTranscriptOf, completeLines, lastResponse } from './transcript'
 
@@ -38,6 +39,9 @@ const FOOTER = 4 + 2 + 20
 const SCOPE = 'context-meter'
 // sub-meter's meter Box in the footer; beside it this meter stays first (see the SessionMode hook).
 const SUB_KEY = 'sub-meter'
+// The card's border and bar by depth in the agent tree: the main thread in the theme's own accent,
+// a subagent and a subagent's subagent in two others, deeper ones as the last.
+const DEPTH_COLORS = ['claude', 'ide', 'merged', 'planMode'] as const
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
 // point was read for and whether it is to be read again, the stretch (bumped by every figure,
@@ -345,9 +349,14 @@ async function viewOf ($: EngineInterface, now?: number, agentId?: string): Prom
   ])
   const { ttl, isInferred } = ttlInfo(cached, ttlSetting)
   // A row written by an earlier build, without its own cache and cost, is not shown as a card.
-  const picked = agentId === undefined ? undefined
-    : others.agents.find(agent => agent.id === agentId && agent.cache !== undefined && agent.cost !== undefined)
-  const selected = picked === undefined ? undefined : { agent: picked, ...agentTtlOf(picked.cache) }
+  const path = agentId === undefined ? [] : pathOf(others, agentId)
+  const picked = path.at(-1)
+  const isCard = picked !== undefined && picked.cache !== undefined && picked.cost !== undefined
+  // An agent on the session's model has the host's window. The host reports no other model's, so
+  // an agent on another takes its model's from the docs' table, marked inferred.
+  const isHostWindow = isCard && shown !== null && picked.model === counted.last?.model
+  const window = !isCard ? null : isHostWindow ? shown!.window : windowOf(picked.model)
+  const selected = !isCard ? undefined : { path, window, isWindowInferred: !isHostWindow, ...agentTtlOf(picked.cache) }
   return { fill: shown, compactAt: threshold, ledger: counted, cost: spent, cache: cached, ttl, isTtlInferred: isInferred, now: now ?? tick, agents: others, selected }
 }
 
@@ -641,8 +650,9 @@ export const register: Register = (on, options) => {
       selectedId = id
       $.ui.invalidate('ui.render')
     }
+    const depthColor = DEPTH_COLORS[Math.min(card.depth, DEPTH_COLORS.length - 1)]
     const toneProps = (tone: Tone) =>
-      tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? 'claude' } : tone === 'dim' ? { dimColor: true } : {}
+      tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? depthColor } : tone === 'dim' ? { dimColor: true } : {}
 
     // The card sits in the flow, after what the band holds, in a holder as wide as the band that
     // pushes it to the right end. The holder is hidden (no row) until the hover group lights: a
@@ -658,7 +668,7 @@ export const register: Register = (on, options) => {
         >
           <Box
             width={card.width} height={card.height}
-            flexDirection="column" borderStyle="round" borderDimColor
+            flexDirection="column" borderStyle="round" borderColor={depthColor}
           >
             {card.rows.map(cells => (
               <Box flexDirection="row">

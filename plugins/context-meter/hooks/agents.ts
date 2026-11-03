@@ -55,7 +55,7 @@ export const modelName = (id: string): string => familyOf(id) ?? id
  */
 export function add (
   state: Agents,
-  info: Pick<AgentInfo, 'id'> & Partial<Pick<AgentInfo, 'name' | 'type' | 'description'>>,
+  info: Pick<AgentInfo, 'id'> & Partial<Pick<AgentInfo, 'name' | 'type' | 'description' | 'parentId'>>,
   usage: TurnUsage,
   at: number,
   isSubscription: boolean,
@@ -69,6 +69,7 @@ export function add (
   const cacheBefore = before?.cache ?? { ...NO_CACHE, storedTtl: state.lastTtl ?? '5m' }
   const row: Agent = {
     id: info.id,
+    ...(info.parentId === undefined ? {} : { parentId: info.parentId }),
     label: labelOf(info),
     model: usage.model,
     ...plus(before === undefined ? ZERO : totalOf(before), counts),
@@ -107,3 +108,33 @@ export const withMain = (state: Agents, main: Counts): Counts => plus(state.tota
 /** The agents of the session that began at `startedAt`: these if they are its, none otherwise (/clear); the TTL inference is kept. */
 export const since = (state: Agents, startedAt: number): Agents =>
   state.startedAt === startedAt ? state : { ...EMPTY, startedAt, ...(state.lastTtl === undefined ? {} : { lastTtl: state.lastTtl }) }
+
+/** The agents a loop spawned: the main thread's (`parentId` undefined) or that agent's, newest first. */
+export const childrenOf = (state: Agents, parentId?: string): Agent[] =>
+  state.agents.filter(agent => agent.parentId === parentId)
+
+/** Every agent under a loop, at any depth: the main thread's are all of them. */
+export function descendantsOf (state: Agents, parentId?: string): Agent[] {
+  if (parentId === undefined) return state.agents
+  const out: Agent[] = []
+  for (let queue = childrenOf(state, parentId); queue.length > 0;) {
+    const next = queue.shift()!
+    if (out.includes(next)) continue
+    out.push(next)
+    queue.push(...childrenOf(state, next.id))
+  }
+  return out
+}
+
+/** The agents from the main thread's child down to `id`, itself last; empty when it has no row. */
+export function pathOf (state: Agents, id: string): Agent[] {
+  const path: Agent[] = []
+  for (let at = state.agents.find(agent => agent.id === id); at !== undefined && !path.includes(at);) {
+    path.unshift(at)
+    at = at.parentId === undefined ? undefined : state.agents.find(agent => agent.id === at!.parentId)
+  }
+  return path
+}
+
+/** The counts summed over agents. */
+export const sumOf = (rows: readonly Agent[]): Counts => rows.reduce((sum, row) => plus(sum, totalOf(row)), ZERO)

@@ -46,6 +46,8 @@ export type ContextMeterAgents = {
   startedAt?: number
   agents: (ContextMeterCounts & {
     id: string
+    /** The agent that spawned it; absent when the main thread did. */
+    parentId?: string
     label: string
     model: string
     requests: number

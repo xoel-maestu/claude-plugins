@@ -1,7 +1,7 @@
 // Pure logic, run with `claude plugin test .`: synthetic figures only.
 import { expect, test } from 'claude-code/testing'
 
-import { EMPTY, KEPT, add as addRaw, labelOf, modelName, seeTtl, since, withMain } from './agents'
+import { EMPTY, KEPT, add as addRaw, childrenOf, descendantsOf, labelOf, modelName, pathOf, seeTtl, since, sumOf, withMain } from './agents'
 import { costAt } from './pricing'
 
 const add = (state: Parameters<typeof addRaw>[0], info: Parameters<typeof addRaw>[1], u: Parameters<typeof addRaw>[2], at: number) =>
@@ -117,4 +117,18 @@ test('a new agent infers 5m until a transcript shows a TTL; the inference surviv
   // a2 has no TTL of its own: it takes a1's as its inference.
   expect(seen.agents.find(row => row.id === 'a2')!.cache.storedTtl).toBe('1h')
   expect(since(seen, 99).lastTtl).toBe('1h')
+})
+
+test('the tree: children by parent, descendants at any depth, the path from the main thread', () => {
+  let state = add(EMPTY, { id: 'a', type: 'Plan' }, usage(1, 0, 0, 1), 1)
+  state = add(state, { id: 'b', type: 'Explore', parentId: 'a' }, usage(2, 0, 0, 1), 2)
+  state = add(state, { id: 'c', type: 'Explore', parentId: 'b' }, usage(4, 0, 0, 1), 3)
+  state = add(state, { id: 'd', type: 'Explore' }, usage(8, 0, 0, 1), 4)
+  expect(childrenOf(state).map(row => row.id)).toEqual(['d', 'a'])
+  expect(childrenOf(state, 'a').map(row => row.id)).toEqual(['b'])
+  expect(descendantsOf(state, 'a').map(row => row.id)).toEqual(['b', 'c'])
+  expect(descendantsOf(state).length).toBe(4)
+  expect(pathOf(state, 'c').map(row => row.id)).toEqual(['a', 'b', 'c'])
+  expect(pathOf(state, 'x')).toEqual([])
+  expect(sumOf(descendantsOf(state, 'a')).input).toBe(6)
 })

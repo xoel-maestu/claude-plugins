@@ -4,7 +4,7 @@ import { expect, test } from 'claude-code/testing'
 /** Equal to within a millionth of a cent: float sums of prices. */
 const near = (actual: number, expected: number) => expect(Math.abs(actual - expected) < 1e-8).toBe(true)
 
-import { NO_COST, costAt, plusCost, priceOf, requestCost } from './pricing'
+import { NO_COST, costAt, plusCost, priceOf, requestCost, windowOf } from './pricing'
 
 const usage = (input: number, cacheRead: number, cacheWrite: number, output: number, model: string) =>
   ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, model })
@@ -37,4 +37,12 @@ test('a request: uncached, read, written at its TTL and output, each at its rate
 
 test('parts add up', () => {
   expect(plusCost(NO_COST, { base: 1, write5m: 2, write1h: 3 })).toEqual({ base: 1, write5m: 2, write1h: 3 })
+})
+
+test('the context window by model: 1M for the models the docs list, 200k for the others', () => {
+  expect(windowOf('claude-haiku-5-5')).toBe(1_000_000)
+  expect(windowOf('claude-opus-4-6')).toBe(1_000_000)
+  expect(windowOf('claude-sonnet-4-5-20250929')).toBe(200_000)
+  expect(windowOf('claude-haiku-4-5')).toBe(200_000)
+  expect(windowOf('other')).toBeNull()
 })

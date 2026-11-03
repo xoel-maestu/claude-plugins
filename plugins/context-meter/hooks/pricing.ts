@@ -84,3 +84,19 @@ export const plusCost = (a: CostParts, b: CostParts): CostParts =>
 
 /** The cost with the writes at `ttl`. */
 export const costAt = (parts: CostParts, ttl: ContextMeterTtl): number => parts.base + (ttl === '1h' ? parts.write1h : parts.write5m)
+
+/**
+ * The context window of `model` in tokens, from Anthropic's context windows page
+ * (https://platform.claude.com/docs/en/build-with-claude/context-windows, read 2026-11-03): 1M for
+ * the models it lists, 200k for the others; null for an id that is not a Claude model's.
+ */
+export function windowOf (model: string): number | null {
+  const family = familyOf(model)
+  if (family === null) return null
+  return MILLION.has(family) ? 1_000_000 : 200_000
+}
+
+const MILLION = new Set([
+  'fable 5.1', 'mythos 5.1', 'fable 5', 'mythos 5', 'opus 5.5', 'opus 5', 'opus 4.8', 'opus 4.7', 'opus 4.6',
+  'sonnet 5.5', 'sonnet 5', 'sonnet 4.6', 'haiku 5.5',
+])
