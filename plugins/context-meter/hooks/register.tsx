@@ -5,7 +5,7 @@ import type { ContextMeterFill, ContextMeterTtl } from '../types'
 
 import { EMPTY as NO_CACHE, HOUR, alertOf, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
 import type { Alert, Cache, TtlSetting } from './cache'
-import { cacheStatus, cardOf, cardText } from './card'
+import { cacheStatus, cardFor, cardText } from './card'
 import type { CardView, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
@@ -27,6 +27,8 @@ const agents = atom({ plugin: 'context-meter', key: 'agents' } as const, NO_AGEN
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 // The main thread's cache as the footer warns of it: written by the tick only when it changes.
 const alert = atom({ plugin: 'context-meter', key: 'alert' } as const, null as Alert | null)
+// Whether the card is open: a press on the meter opens and closes it, Close on the card closes it.
+const open = atom({ plugin: 'context-meter', key: 'open' } as const, false)
 
 const SYNC_MS = 2000
 // `$.store` keys: the TTL last observed and the last subscription reading, for the next session.
@@ -38,9 +40,6 @@ const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
 const FOOTER = 4 + 2 + 20
-// The hover group the meter (in SessionMode) and its card (in AbovePrompt) share: a pointer on
-// either lights both, so the card shows while the meter or the card itself is under it.
-const SCOPE = 'context-meter'
 // sub-meter's meter Box in the footer; beside it this meter stays first (see the SessionMode hook).
 const SUB_KEY = 'sub-meter'
 // The card's border and bar by depth in the agent tree: the main thread in the theme's own accent,
@@ -700,11 +699,12 @@ export const register: Register = (on, options) => {
   // without sub-meter's meter, and the bar needs room for sub-meter's least form too, so the row is
   // the same whichever wraps the other.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, beneath, sub, now, warned] = await Promise.all([
+    const [shown, beneath, sub, now, warned, isOpen] = await Promise.all([
       read($, fill), next(e),
       $.state.get({ plugin: 'sub-meter', key: 'reading' } as never).catch(() => undefined),
       $.clock.now(),
       read($, alert),
+      read($, open),
     ])
     if (shown === null) return beneath
 
@@ -718,14 +718,18 @@ export const register: Register = (on, options) => {
     const form = fit(room, text, isSubOn ? SEPARATOR.length + SUB_LEAST : 0)
     if (form === null) return beneath
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const hasBeneath = e.props.modes.length > 0 || !isBlank(beneath)
     const color = colorFor(shown.percent)
     const bar = barOf(shown.percent, text)
 
+    // The meter is one press that opens and closes the card (the pointer inverts it). The card is
+    // not revealed on hover: in the band it takes rows from the transcript, which a pointer passing
+    // over the meter would move each time, and it hid again as the pointer crossed the prompt to reach it.
     return (
       <Box flexDirection="row">
-        <Box key="context-meter" flexDirection="row" hover={{ scope: SCOPE }}>
+        <Box key="context-meter" flexDirection="row">
+          <Button key="context-meter:toggle" label={isOpen ? 'Close context card' : 'Open context card'} plain onPress={() => { void update($, open, value => !value) }}>
           {form === 'bare' ? null
             // The prefix warns of the main thread's cache expiry: the warning color in its last stretch, the error color once gone.
             : isAlertOn && warned === 'expiring' ? <Text color="warning">ctx </Text>
@@ -734,6 +738,7 @@ export const register: Register = (on, options) => {
           {form === 'bar' ? <Text color={color ?? 'claude'}>{'━'.repeat(bar.filled)}</Text> : null}
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
           <Text color={color}>{text}</Text>
+          </Button>
         </Box>
         {hasBeneath ? <Text dimColor>{SEPARATOR}</Text> : null}
         {beneath}
@@ -741,16 +746,17 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The hover card, in the band above the prompt: placed out of the flow at the band's bottom right,
-  // so its bottom border sits on the row above the prompt's top border and it moves nothing of what
-  // the band holds. Hidden until the meter's group is hovered. With nothing to show, the band is
-  // left as it was, so it gets no row of its own.
+  // The card, in the band above the prompt, at its right end, while it is open (a press on the
+  // meter). Closed, or with nothing to show, the band is left as it was, so it gets no row of its own.
+  // The band cannot paint over the transcript: a Box placed out of its flow is clipped by the band
+  // (Claude Code's BoxProps.position), so the open card takes its rows from the transcript's.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // The agent whose transcript is in view, else the one picked on the card, else the main thread.
-    const [view, beneath] = await Promise.all([viewOf($, undefined, e.props.view?.agentId ?? selectedId), next(e)])
+    const [view, beneath, isOpen] = await Promise.all([viewOf($, undefined, e.props.view?.agentId ?? selectedId), next(e), read($, open)])
     const shown = view.fill
-    if (shown === null || e.props.hasSurvey) return beneath
-    const card = cardOf(view, language, e.props.bodyColumns)
+    if (!isOpen || shown === null || e.props.hasSurvey) return beneath
+    // As tall as the band shows whole where it can, so the agents stay on screen; the rest scrolls.
+    const card = cardFor(view, language, e.props.bodyColumns, e.props.maxRows)
     if (card === null) return beneath
 
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -759,6 +765,11 @@ export const register: Register = (on, options) => {
     // otherwise it picks what the card shows.
     const viewed = e.props.view?.agentId
     const press = (target: string) => () => {
+      if (target === 'close') {
+        selectedId = undefined
+        void update($, open, () => false)
+        return
+      }
       const id = target === 'main' ? undefined : target.slice('agent:'.length)
       if (viewed !== undefined) {
         void $.ui.view(id === undefined ? {} : { agentId: id }).catch(() => undefined)
@@ -772,17 +783,12 @@ export const register: Register = (on, options) => {
       tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? depthColor } : tone === 'dim' ? { dimColor: true } : {}
 
     // The card sits in the flow, after what the band holds, in a holder as wide as the band that
-    // pushes it to the right end. The holder is hidden (no row) until the hover group lights: a
-    // card floated out of the flow is clipped by the band on the terminal (seen in a real session),
-    // so the card takes its rows while shown. An engine node may not sit under a Box that sets a
-    // width, so the holder is apart from it. The padding is drawn as spaces in each row.
+    // pushes it to the right end. An engine node may not sit under a Box that sets a width, so the
+    // holder is apart from it. The padding is drawn as spaces in each row.
     return (
       <Box flexDirection="column">
         {beneath}
-        <Box
-          width={e.props.bodyColumns} justifyContent="flex-end"
-          display="none" hover={{ scope: SCOPE, display: 'flex' }}
-        >
+        <Box width={e.props.bodyColumns} justifyContent="flex-end">
           <Box
             width={card.width} height={card.height}
             flexDirection="column" borderStyle="round" borderColor={depthColor}

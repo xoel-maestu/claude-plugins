@@ -1,6 +1,6 @@
 # context-meter
 
-A Claude Code plugin that shows how full the context window is, at the bottom right of the prompt footer. Hover the meter for a card with the token breakdown, the prompt cache state and the session cost. `/context-meter` prints the same card as text.
+A Claude Code plugin that shows how full the context window is, at the bottom right of the prompt footer. Click the meter for a card with the token breakdown, the prompt cache state and the session cost; click it again, or Close on the card, to close it. `/context-meter` prints the same card as text.
 
 ## What it shows
 
@@ -10,11 +10,11 @@ The meter in the footer (here beside [sub-meter](../sub-meter), captured at 120 
 ⏵⏵ auto mode on · ← 5 agents                                                ctx ─────── 5% · 5h ━━━━━━━━── 83% ↻ 40m
 ```
 
-The card, with the pointer on the meter:
+The card, opened with a click on the meter (`Close` at the end of its first row):
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────╮
-│ Context   49.4k / 1M   5%                                            │
+│ Context   49.4k / 1M   5%                                      Close │
 │ ━━━───────────────────────────────────────────────────────────────── │
 │ Autocompact at ~967k                                                 │
 │                Input   Cache read   Cache write   Uncached   Output  │
@@ -99,7 +99,7 @@ jq -s 'map(select(.scope == "agent")) | group_by(.agent) | map({agent: .[0].agen
 /plugin install context-meter@xoel-plugins
 ```
 
-The hover card needs a terminal with mouse reporting. `/context-meter` works in any terminal.
+Opening the card with a click needs a terminal with mouse reporting (the fullscreen layout). `/context-meter` works in any terminal.
 
 ## Uninstall
 
@@ -124,7 +124,7 @@ With `cacheTtl` set to `auto`, the plugin reads the TTL of the last cache write 
 
 ## How it works
 
-- The meter is drawn in the footer row (`SessionMode`). The card is drawn in the band above the prompt (`AbovePrompt`), hidden until the pointer is on the meter or on the card. Both join one hover group, so no code runs on hover.
+- The meter is drawn in the footer row (`SessionMode`). The meter is one button: a click opens the card and another closes it, as does `Close` on the card. The card is drawn in the band above the prompt (`AbovePrompt`) while it is open. Claude Code clips anything a plugin draws there to the band (a Box placed `position: "absolute"` cannot paint over the transcript), so the open card takes its rows from the transcript, which moves up while it is open and back when it closes. That is why it opens on a click and not on hover: on hover the transcript moved each time the pointer passed over the meter, and the card hid as the pointer crossed the prompt to reach it. The card keeps to the rows the band shows at once where it can: it lists fewer cache losses, then fewer agents (down to one of each), then drops the blank rows between sections. What still does not fit scrolls in the band with the wheel.
 - The figure comes from `$.session.usage()`, read after each response and every 2 seconds, which catches resumes and rewinds.
 - Token counts come from the `turn.step` hook: requests with no `agentId` are the main thread's; one whose `agentId` `$.agent.list()` names is a subagent's; any other is the engine's own and is not counted. Up to 50 agents keep a row; an older one stays in the totals. They are kept in plugin state, so reloading the plugin keeps them, and `/clear` resets them. A compaction's own summarizer request is not a `turn.step`, so it is never counted as the session's work.
 - Input is uncached input plus cache read plus cache write, and the hit rate is cache read over that input: the total input of Anthropic's [prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).

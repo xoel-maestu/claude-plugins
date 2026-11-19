@@ -335,11 +335,11 @@ test('reads the autocompact point again when autocompact is switched in /config'
 })
 
 type Node = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
-/** The hidden Box a drawing reveals on hover (the card's holder), if any. */
+/** The Box that holds the card at the band's right end, if the drawing has one. */
 function placedIn (node: unknown): Node | undefined {
   if (node === null || typeof node !== 'object') return undefined
   const n = node as Node
-  if (n.props?.display === 'none') return n
+  if (n.props?.justifyContent === 'flex-end') return n
   for (const child of n.children ?? []) {
     const found = placedIn(child)
     if (found !== undefined) return found
@@ -358,24 +358,56 @@ async function cardIn (ui: { drawn: () => Promise<unknown> }) {
   return { holder, box, rows: (box?.children ?? []).map(text) }
 }
 
-const band = ($: Engine, bodyColumns = 115, hasSurvey = false) =>
-  $.ui.mount({
+/** The engines whose card a press on the meter has opened. */
+const opened = new WeakSet<Engine>()
+/** Opens the card as the person does, with a press on the meter, once per engine; no meter, no card. */
+async function openCard ($: Engine) {
+  if (opened.has($)) return
+  const meter = await footer($, 120)
+  if (await meter.find({ type: 'Button', key: 'context-meter:toggle' } as never).catch(() => undefined) === undefined) return
+  await meter.press({ key: 'context-meter:toggle' })
+  opened.add($)
+}
+/** The band, with the card opened first unless `isOpen` is false. */
+const band = async ($: Engine, bodyColumns = 115, hasSurvey = false, isOpen = true, maxRows = 30) => {
+  if (isOpen) await openCard($)
+  return $.ui.mount({
     plugin: 'context-meter',
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey, isWorking: false, maxRows: 30, bodyColumns, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { hasSurvey, isWorking: false, maxRows, bodyColumns, scroll: { offset: 0, bodyRows: maxRows }, view: {} },
     viewport: { columns: bodyColumns + 5, rows: 30 },
   })
+}
 
-test('the footer draws no card: the meter alone, joined to the hover group', async ($, on) => {
+test('the footer draws no card: the meter alone, one press that opens the card, no hover reveal', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
   const ui = await footer($, 120)
   const drawn = (await ui.drawn()) as Node
   expect(placedIn(drawn)).toBeUndefined()
-  // The tree keeps a hover beside the props.
-  expect(drawn.children?.[0]).toMatchObject({ props: { key: 'context-meter' }, hover: { scope: 'context-meter' } })
+  const meter = drawn.children?.[0] as Node
+  expect(meter).toMatchObject({ props: { key: 'context-meter' } })
+  expect(meter.hover).toBeUndefined()
+  expect(meter.children?.[0]).toMatchObject({ type: 'Button', props: { key: 'context-meter:toggle', plain: true } })
+})
+
+test('a press on the meter opens the card in the band and another closes it; so does Close on the card', async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  const meter = await footer($, 120)
+  const ui = await band($, 115, false, false)
+  // Closed: the band is passed through as it came, so it takes no row and moves nothing.
+  expect(placedIn(await ui.drawn())).toBeUndefined()
+  await meter.press({ key: 'context-meter:toggle' })
+  expect((await cardIn(ui)).rows[0]).toContain('Context   124k / 200k   62%')
+  await meter.press({ key: 'context-meter:toggle' })
+  expect(placedIn(await ui.drawn())).toBeUndefined()
+  await meter.press({ key: 'context-meter:toggle' })
+  await ui.press({ key: 'close' })
+  expect(placedIn(await ui.drawn())).toBeUndefined()
 })
 
 test('every cell the footer drawing holds is on the row, as a plugin above it would count', async ($, on) => {
@@ -391,7 +423,7 @@ test('every cell the footer drawing holds is on the row, as a plugin above it wo
   expect(all(await (await footer($, 120)).drawn())).toBe(14)
 })
 
-test('the hover card, in the band: last in the flow, right-aligned, hidden until the group lights, three rows', async ($, on) => {
+test('the open card, in the band: last in the flow, right-aligned, shown whole, three rows, Close at the end of the first', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
@@ -400,20 +432,21 @@ test('the hover card, in the band: last in the flow, right-aligned, hidden until
   const { holder, box, rows } = await cardIn(ui)
   // The holder: the last in the flow, as wide as the band, pushing the card to its right end.
   expect(drawn.children?.at(-1)).toEqual(holder)
-  expect(holder?.props).toMatchObject({ width: 115, justifyContent: 'flex-end', display: 'none' })
-  expect(holder?.hover).toEqual({ scope: 'context-meter', display: 'flex' })
+  expect(holder?.props).toMatchObject({ width: 115, justifyContent: 'flex-end' })
+  expect(holder?.props?.display).toBeUndefined()
+  expect(holder?.hover).toBeUndefined()
   // The main thread's card is framed in the theme's accent, as its bar is.
   expect(box?.props).toMatchObject({ width: 40, height: 5, borderStyle: 'round', borderColor: 'claude' })
   expect(box?.props?.position).toBeUndefined()
   // Each row is the content (36) with a column of padding at each side: the border's inside.
   expect(rows).toEqual([
-    ' ' + 'Context   124k / 200k   62%'.padEnd(36) + ' ',
+    ' ' + 'Context   124k / 200k   62%'.padEnd(31) + 'Close' + ' ',
     ' ' + '━'.repeat(22) + '─'.repeat(14) + ' ',
     ' ' + 'Autocompact at ~167k'.padEnd(36) + ' ',
   ])
 })
 
-test('the band keeps what is beneath it first in the flow, the card hidden after it', async ($, on) => {
+test('the band keeps what is beneath it first in the flow, the open card after it', async ($, on) => {
   // Beneath: another plugin's line in the band.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -425,9 +458,9 @@ test('the band keeps what is beneath it first in the flow, the card hidden after
   const drawn = (await (await band($)).drawn()) as Node
   expect(drawn.children).toHaveLength(2)
   expect(drawn.children?.[0]).toMatchObject({ type: 'Text', children: ['other plugin'] })
-  // The rest is the card's holder, hidden (no row) until the hover group lights.
+  // The rest is the card's holder.
   const holder = drawn.children?.[1] as Node
-  expect(holder.props).toMatchObject({ display: 'none' })
+  expect(holder.props).toMatchObject({ justifyContent: 'flex-end' })
   expect(holder.children).toHaveLength(1)
 })
 
@@ -452,7 +485,7 @@ test('the card leaves out the autocompact row when the breakdown has none, a row
   await measure($, 62)
   const { box, rows } = await cardIn(await band($))
   expect(box?.props).toMatchObject({ height: 4 })
-  expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
+  expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%    Close', '━'.repeat(22) + '─'.repeat(14)])
 })
 
 test('the card narrows to a narrow band and takes the meter color past warnAt', async ($, on) => {
@@ -469,7 +502,7 @@ test('the card in Spanish', { options: { language: 'es' } }, async ($, on) => {
   await startSession($)
   await measure($, 62)
   const { rows } = await cardIn(await band($))
-  expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
+  expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%  Cerrar', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
 })
 
 test('/context-meter prints the card as text, or says there is no figure', async ($, on) => {
@@ -753,7 +786,8 @@ test('a press on an agent row shows its card; Main goes back; a transcript in vi
   await feedAgents($, w)
   await runCommand($)
   const ui = await band($, 115)
-  const first = async () => (await cardIn(ui)).rows[0]!.trim()
+  // The first row ends in the card's Close press.
+  const first = async () => (await cardIn(ui)).rows[0]!.trim().replace(/ +Close$/, '')
   expect(await first()).toMatch(/^Context /)
   await ui.press({ key: 'agent:a1' })
   expect(await first()).toBe('Main › Count files · haiku 5.5')
@@ -764,7 +798,7 @@ test('a press on an agent row shows its card; Main goes back; a transcript in vi
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
     viewport: { columns: 120, rows: 30 },
   })
-  expect((await cardIn(viewing)).rows[0]!.trim()).toBe('Main › reviewer · sonnet 5.5')
+  expect((await cardIn(viewing)).rows[0]!.trim()).toMatch(/^Main › reviewer · sonnet 5\.5 +Close$/)
 })
 
 test("an agent's TTL comes from its own transcript beside the session's", async ($, on) => {
@@ -825,7 +859,7 @@ test("a subagent's own subagents: listed in its card, not the main thread's; Ove
     'Main + subagents 4 17.1k 9k 8k 70 170 53%',
   ])
   const lead = flat((await run($, 'lead')).text)
-  expect(lead[0]).toBe('Main › lead · sonnet 5.5')
+  expect(lead[0]).toMatch(/^Main › lead · sonnet 5\.5( +Close)?$/)
   expect(lead.filter(line => /^(scout|deep|Subagents total|This agent \+ subagents) /.test(line))).toEqual([
     'scout 1 2k 0 2k 20 20 0% haiku 5.5',
     'Subagents total 2 6.1k 0 6k 60 60 0%',
@@ -841,7 +875,7 @@ test("a subagent's own subagents: listed in its card, not the main thread's; Ove
   expect(await border()).toBe('merged')
   // The path is pressable: back to lead.
   await ui.press({ key: 'agent:p' })
-  expect((await cardIn(ui)).rows[0]!.trim()).toBe('Main › lead · sonnet 5.5')
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › lead · sonnet 5\.5 +Close$/)
 })
 
 test('a transcript in view of an agent the card has no row for shows the main card; /clear drops the pick', async ($, on) => {
@@ -851,6 +885,7 @@ test('a transcript in view of an agent the card has no row for shows the main ca
   await measure($, 62)
   await feedAgents($, w)
   await runCommand($)
+  await openCard($)
   const mountWith = (view: { agentId?: string }) => $.ui.mount({
     plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view },
@@ -874,6 +909,7 @@ test('a press while an agent transcript is in view moves the view', async ($, on
   await measure($, 62)
   await feedAgents($, w)
   await runCommand($)
+  await openCard($)
   const ui = await $.ui.mount({
     plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
@@ -1163,7 +1199,7 @@ test('the band card at 120 columns: the table in full, the cache rows after it',
   const { box, rows } = await cardIn(await band($, 115))
   expect(box?.props).toMatchObject({ width: 71, height: 11 })
   expect(rows.map(row => row.trimEnd())).toEqual([
-    ' Context   124k / 200k   62%',
+    ' ' + 'Context   124k / 200k   62%'.padEnd(62) + 'Close',
     ' ' + '━'.repeat(42) + '─'.repeat(25),
     '                Input   Cache read   Cache write   Uncached   Output',
     ' Last request   2.2M    2M           154.9k        29.8k      85.6k',

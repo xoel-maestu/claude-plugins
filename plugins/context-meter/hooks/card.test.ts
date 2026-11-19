@@ -1,7 +1,7 @@
 // Pure logic, run with `claude plugin test .`: synthetic figures only.
 import { expect, test } from 'claude-code/testing'
 
-import { cacheStatus, cardOf, cardText, clockTime, minutes, span, tokens, usdText } from './card'
+import { cacheStatus, cardFor, cardOf, cardText, clockTime, minutes, span, tokens, usdText } from './card'
 import type { Card } from './card'
 import { EMPTY } from './cache'
 
@@ -320,4 +320,44 @@ test('no losses: a sentence; after /clear the marker comes first', () => {
   ])
   expect(trimmed(cardOf({ ...afterClear, cache: { ...CACHE, losses: [], clearedAt: 5 * MIN } }, 'es', 115)).slice(9))
     .toEqual([`Borrada a las ${clockTime(5 * MIN)}`, 'Sin pérdidas de caché en esta sesión'])
+})
+
+test('cardFor: a card that fits the band is the card, with a Close press at the end of its first row', () => {
+  const many = { ...WITH_CACHE, cache: { ...CACHE, losses: Array.from({ length: 10 }, (_, i) => ({ at: (10 - i) * MIN, lost: 10_000 + i, cause: 'invalidated' as const, gap: MIN })) } }
+  const whole = cardOf(many, 'en', 115)!
+  const card = cardFor(many, 'en', 115, 40)!
+  expect(card.height).toBe(whole.height)
+  expect(lines(card).slice(1)).toEqual(lines(whole).slice(1))
+  const first = card.rows[0]!
+  expect(first.at(-1)).toEqual({ text: 'Close', tone: 'dim', press: 'close' })
+  // The row stays as wide as the content: the press sits at its right end.
+  expect(first.map(cell => cell.text).join('')).toHaveLength(card.content)
+  expect(cardFor(many, 'es', 115, 40)!.rows[0]!.at(-1)).toEqual({ text: 'Cerrar', tone: 'dim', press: 'close' })
+})
+
+test('cardFor: a card taller than the band lists fewer losses, down to one, until it fits', () => {
+  const many = { ...WITH_CACHE, cache: { ...CACHE, losses: Array.from({ length: 10 }, (_, i) => ({ at: (10 - i) * MIN, lost: 10_000 + i, cause: 'invalidated' as const, gap: MIN })) } }
+  const whole = cardOf(many, 'en', 115)!
+  const lossLines = (card: Card | null) => lines(card).filter(line => line.includes('−')).length
+  expect(lossLines(whole)).toBe(5)
+  const fitted = cardFor(many, 'en', 115, whole.height - 2)!
+  expect(fitted.height).toBe(whole.height - 2)
+  expect(lossLines(fitted)).toBe(3)
+  // Past one loss nothing more goes: the band scrolls what is left.
+  const least = cardFor(many, 'en', 115, 3)!
+  expect(lossLines(least)).toBe(1)
+})
+
+test('cardFor: a row too short for the press keeps its text and has none', () => {
+  const card = cardFor({ fill: FILL, compactAt: null }, 'en', 30, 40)!
+  expect(card.rows[0]!.some(cell => cell.press === 'close')).toBe(false)
+  expect(lines(card)).toEqual(lines(cardOf({ fill: FILL, compactAt: null }, 'en', 30)))
+})
+
+test('cardFor: with one loss or none it ends, the card as short as it gets', () => {
+  const one = { ...WITH_CACHE, cache: { ...CACHE, losses: CACHE.losses.slice(0, 1) } }
+  const none = { ...WITH_CACHE, cache: { ...CACHE, losses: [] } }
+  expect(cardFor(one, 'en', 115, 1)!.height).toBe(cardOf(one, 'en', 115, 1, 1, false)!.height)
+  expect(cardFor(none, 'en', 115, 1)!.height).toBe(cardOf(none, 'en', 115, 1, 1, false)!.height)
+  expect(cardFor({ fill: FILL, compactAt: null }, 'en', 115, 1)!.height).toBe(4)
 })
