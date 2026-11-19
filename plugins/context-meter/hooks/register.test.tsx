@@ -335,11 +335,11 @@ test('reads the autocompact point again when autocompact is switched in /config'
 })
 
 type Node = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
-/** The hidden Box a drawing reveals on hover (the card's holder), if any. */
+/** The Box that holds the card at the band's right end, if the drawing has one. */
 function placedIn (node: unknown): Node | undefined {
   if (node === null || typeof node !== 'object') return undefined
   const n = node as Node
-  if (n.props?.display === 'none') return n
+  if (n.props?.justifyContent === 'flex-end') return n
   for (const child of n.children ?? []) {
     const found = placedIn(child)
     if (found !== undefined) return found
@@ -358,24 +358,56 @@ async function cardIn (ui: { drawn: () => Promise<unknown> }) {
   return { holder, box, rows: (box?.children ?? []).map(text) }
 }
 
-const band = ($: Engine, bodyColumns = 115, hasSurvey = false) =>
-  $.ui.mount({
+/** The engines whose card a press on the meter has opened. */
+const opened = new WeakSet<Engine>()
+/** Opens the card as the person does, with a press on the meter, once per engine; no meter, no card. */
+async function openCard ($: Engine) {
+  if (opened.has($)) return
+  const meter = await footer($, 120)
+  if (await meter.find({ type: 'Button', key: 'context-meter:toggle' } as never).catch(() => undefined) === undefined) return
+  await meter.press({ key: 'context-meter:toggle' })
+  opened.add($)
+}
+/** The band, with the card opened first unless `isOpen` is false. */
+const band = async ($: Engine, bodyColumns = 115, hasSurvey = false, isOpen = true, maxRows = 30) => {
+  if (isOpen) await openCard($)
+  return $.ui.mount({
     plugin: 'context-meter',
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey, isWorking: false, maxRows: 30, bodyColumns, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { hasSurvey, isWorking: false, maxRows, bodyColumns, scroll: { offset: 0, bodyRows: maxRows }, view: {} },
     viewport: { columns: bodyColumns + 5, rows: 30 },
   })
+}
 
-test('the footer draws no card: the meter alone, joined to the hover group', async ($, on) => {
+test('the footer draws no card: the meter alone, one press that opens the card, no hover reveal', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
   const ui = await footer($, 120)
   const drawn = (await ui.drawn()) as Node
   expect(placedIn(drawn)).toBeUndefined()
-  // The tree keeps a hover beside the props.
-  expect(drawn.children?.[0]).toMatchObject({ props: { key: 'context-meter' }, hover: { scope: 'context-meter' } })
+  const meter = drawn.children?.[0] as Node
+  expect(meter).toMatchObject({ props: { key: 'context-meter' } })
+  expect(meter.hover).toBeUndefined()
+  expect(meter.children?.[0]).toMatchObject({ type: 'Button', props: { key: 'context-meter:toggle', plain: true } })
+})
+
+test('a press on the meter opens the card in the band and another closes it; so does Close on the card', async ($, on) => {
+  world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  const meter = await footer($, 120)
+  const ui = await band($, 115, false, false)
+  // Closed: the band is passed through as it came, so it takes no row and moves nothing.
+  expect(placedIn(await ui.drawn())).toBeUndefined()
+  await meter.press({ key: 'context-meter:toggle' })
+  expect((await cardIn(ui)).rows[0]).toContain('Context   124k / 200k   62%')
+  await meter.press({ key: 'context-meter:toggle' })
+  expect(placedIn(await ui.drawn())).toBeUndefined()
+  await meter.press({ key: 'context-meter:toggle' })
+  await ui.press({ key: 'close' })
+  expect(placedIn(await ui.drawn())).toBeUndefined()
 })
 
 test('every cell the footer drawing holds is on the row, as a plugin above it would count', async ($, on) => {
@@ -391,7 +423,7 @@ test('every cell the footer drawing holds is on the row, as a plugin above it wo
   expect(all(await (await footer($, 120)).drawn())).toBe(14)
 })
 
-test('the hover card, in the band: last in the flow, right-aligned, hidden until the group lights, three rows', async ($, on) => {
+test('the open card, in the band: last in the flow, right-aligned, shown whole, three rows, Close at the end of the first', async ($, on) => {
   world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
   await startSession($)
   await measure($, 62)
@@ -400,20 +432,21 @@ test('the hover card, in the band: last in the flow, right-aligned, hidden until
   const { holder, box, rows } = await cardIn(ui)
   // The holder: the last in the flow, as wide as the band, pushing the card to its right end.
   expect(drawn.children?.at(-1)).toEqual(holder)
-  expect(holder?.props).toMatchObject({ width: 115, justifyContent: 'flex-end', display: 'none' })
-  expect(holder?.hover).toEqual({ scope: 'context-meter', display: 'flex' })
+  expect(holder?.props).toMatchObject({ width: 115, justifyContent: 'flex-end' })
+  expect(holder?.props?.display).toBeUndefined()
+  expect(holder?.hover).toBeUndefined()
   // The main thread's card is framed in the theme's accent, as its bar is.
   expect(box?.props).toMatchObject({ width: 40, height: 5, borderStyle: 'round', borderColor: 'claude' })
   expect(box?.props?.position).toBeUndefined()
   // Each row is the content (36) with a column of padding at each side: the border's inside.
   expect(rows).toEqual([
-    ' ' + 'Context   124k / 200k   62%'.padEnd(36) + ' ',
+    ' ' + 'Context   124k / 200k   62%'.padEnd(31) + 'Close' + ' ',
     ' ' + '━'.repeat(22) + '─'.repeat(14) + ' ',
     ' ' + 'Autocompact at ~167k'.padEnd(36) + ' ',
   ])
 })
 
-test('the band keeps what is beneath it first in the flow, the card hidden after it', async ($, on) => {
+test('the band keeps what is beneath it first in the flow, the open card after it', async ($, on) => {
   // Beneath: another plugin's line in the band.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -425,9 +458,9 @@ test('the band keeps what is beneath it first in the flow, the card hidden after
   const drawn = (await (await band($)).drawn()) as Node
   expect(drawn.children).toHaveLength(2)
   expect(drawn.children?.[0]).toMatchObject({ type: 'Text', children: ['other plugin'] })
-  // The rest is the card's holder, hidden (no row) until the hover group lights.
+  // The rest is the card's holder.
   const holder = drawn.children?.[1] as Node
-  expect(holder.props).toMatchObject({ display: 'none' })
+  expect(holder.props).toMatchObject({ justifyContent: 'flex-end' })
   expect(holder.children).toHaveLength(1)
 })
 
@@ -446,13 +479,74 @@ test('the band yields to a survey', async ($, on) => {
   expect(placedIn(await (await band($, 115, true)).drawn())).toBeUndefined()
 })
 
+// The overlay: in fullscreen, no turn running, the transcript past its viewport (a row partly out of it).
+/** Lays out what the overlay needs and returns the ids the card placed, and the placed row mounted by id. */
+async function overlayWorld ($: Engine, on: On) {
+  const placed: string[] = []
+  on('ui.place', ($, e) => {
+    placed.push(e.id)
+    return { value: { isPlaced: true, requestId: `row-${e.id}` } } as never
+  })
+  const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  const meter = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'SessionMode', props: { modes: [] },
+    viewport: { columns: 120, rows: 34, isFullscreen: true } as never,
+  })
+  const bandUi = await band($, 115, false, false)
+  // A row whose top is scrolled away: the transcript is taller than the viewport.
+  const scrolled = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'TurnDuration', requestId: 'd-1',
+    props: { word: 'Brewed', durationMs: 2000, onScreen: { first: 3, last: 4, of: 5 } } as never,
+  })
+  const placedRow = (id: string) => $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'Placed', requestId: `row-${id}`,
+    props: { id, plugin: 'context-meter' }, viewport: { columns: 120, rows: 34 },
+  })
+  return { w, placed, meter, bandUi, scrolled, placedRow }
+}
+/** The card the placed row draws out of the flow, if any. */
+const overlayIn = async (ui: { drawn: () => Promise<unknown> }) => {
+  const drawn = (await ui.drawn()) as Node | null
+  const out = drawn?.children?.[0] as Node | undefined
+  return out?.props?.position === 'absolute' ? out : undefined
+}
+
+test('a model request (turn.step) moves an open overlay card to the band, under the new rows', async ($, on) => {
+  const { w, placed, meter, bandUi, placedRow } = await overlayWorld($, on)
+  await meter.press({ key: 'context-meter:toggle' })
+  await respond($, w, null)
+  expect(await overlayIn(await placedRow(placed[0]!))).toBeUndefined()
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
+test('a slash command moves an open overlay card to the band: its output is written after the placed row', async ($, on) => {
+  const { placed, meter, bandUi, placedRow } = await overlayWorld($, on)
+  await meter.press({ key: 'context-meter:toggle' })
+  await $.command.run({ command: 'cost', args: '', origin: { kind: 'composer' } } as never).catch(() => undefined)
+  expect(await overlayIn(await placedRow(placed[0]!))).toBeUndefined()
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
+test('/clear forgets the rows past the viewport: on a short transcript the card opens in the band', async ($, on) => {
+  const { placed, meter, bandUi, scrolled } = await overlayWorld($, on)
+  await $.session.end({ reason: 'clear' } as never)
+  // The old row reports once more as the transcript is replaced, as Claude Code does, then no more.
+  await scrolled.redraw({ word: 'Brewed', durationMs: 2000, onScreen: null } as never)
+  await measure($, 62)
+  await meter.press({ key: 'context-meter:toggle' })
+  expect(placed).toHaveLength(0)
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
 test('the card leaves out the autocompact row when the breakdown has none, a row shorter', async ($, on) => {
   world(on, fill(62), null)
   await startSession($)
   await measure($, 62)
   const { box, rows } = await cardIn(await band($))
   expect(box?.props).toMatchObject({ height: 4 })
-  expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14)])
+  expect(rows.map(row => row.trim())).toEqual(['Context   124k / 200k   62%    Close', '━'.repeat(22) + '─'.repeat(14)])
 })
 
 test('the card narrows to a narrow band and takes the meter color past warnAt', async ($, on) => {
@@ -469,7 +563,7 @@ test('the card in Spanish', { options: { language: 'es' } }, async ($, on) => {
   await startSession($)
   await measure($, 62)
   const { rows } = await cardIn(await band($))
-  expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
+  expect(rows.map(row => row.trim())).toEqual(['Contexto   124k / 200k   62%  Cerrar', '━'.repeat(22) + '─'.repeat(14), 'Autocompacta en ~167k'])
 })
 
 test('/context-meter prints the card as text, or says there is no figure', async ($, on) => {
@@ -753,7 +847,8 @@ test('a press on an agent row shows its card; Main goes back; a transcript in vi
   await feedAgents($, w)
   await runCommand($)
   const ui = await band($, 115)
-  const first = async () => (await cardIn(ui)).rows[0]!.trim()
+  // The first row ends in the card's Close press.
+  const first = async () => (await cardIn(ui)).rows[0]!.trim().replace(/ +Close$/, '')
   expect(await first()).toMatch(/^Context /)
   await ui.press({ key: 'agent:a1' })
   expect(await first()).toBe('Main › Count files · haiku 5.5')
@@ -764,7 +859,7 @@ test('a press on an agent row shows its card; Main goes back; a transcript in vi
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
     viewport: { columns: 120, rows: 30 },
   })
-  expect((await cardIn(viewing)).rows[0]!.trim()).toBe('Main › reviewer · sonnet 5.5')
+  expect((await cardIn(viewing)).rows[0]!.trim()).toMatch(/^Main › reviewer · sonnet 5\.5 +Close$/)
 })
 
 test("an agent's TTL comes from its own transcript beside the session's", async ($, on) => {
@@ -825,7 +920,7 @@ test("a subagent's own subagents: listed in its card, not the main thread's; Ove
     'Main + subagents 4 17.1k 9k 8k 70 170 53%',
   ])
   const lead = flat((await run($, 'lead')).text)
-  expect(lead[0]).toBe('Main › lead · sonnet 5.5')
+  expect(lead[0]).toMatch(/^Main › lead · sonnet 5\.5( +Close)?$/)
   expect(lead.filter(line => /^(scout|deep|Subagents total|This agent \+ subagents) /.test(line))).toEqual([
     'scout 1 2k 0 2k 20 20 0% haiku 5.5',
     'Subagents total 2 6.1k 0 6k 60 60 0%',
@@ -841,7 +936,7 @@ test("a subagent's own subagents: listed in its card, not the main thread's; Ove
   expect(await border()).toBe('merged')
   // The path is pressable: back to lead.
   await ui.press({ key: 'agent:p' })
-  expect((await cardIn(ui)).rows[0]!.trim()).toBe('Main › lead · sonnet 5.5')
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › lead · sonnet 5\.5 +Close$/)
 })
 
 test('a transcript in view of an agent the card has no row for shows the main card; /clear drops the pick', async ($, on) => {
@@ -851,6 +946,7 @@ test('a transcript in view of an agent the card has no row for shows the main ca
   await measure($, 62)
   await feedAgents($, w)
   await runCommand($)
+  await openCard($)
   const mountWith = (view: { agentId?: string }) => $.ui.mount({
     plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view },
@@ -862,7 +958,10 @@ test('a transcript in view of an agent the card has no row for shows the main ca
   expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › /)
   await $.session.end({ reason: 'clear' } as never)
   await runCommand($)
-  expect((await cardIn(await band($, 115))).rows[0]!.trim()).toMatch(/^Context /)
+  // /clear closes the card; opened again, it shows the main thread's.
+  expect(placedIn(await (await band($, 115, false, false)).drawn())).toBeUndefined()
+  await (await footer($, 120)).press({ key: 'context-meter:toggle' })
+  expect((await cardIn(await band($, 115, false, false))).rows[0]!.trim()).toMatch(/^Context /)
 })
 
 test('a press while an agent transcript is in view moves the view', async ($, on) => {
@@ -874,6 +973,7 @@ test('a press while an agent transcript is in view moves the view', async ($, on
   await measure($, 62)
   await feedAgents($, w)
   await runCommand($)
+  await openCard($)
   const ui = await $.ui.mount({
     plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: { agentId: 'a2' } },
@@ -1163,7 +1263,7 @@ test('the band card at 120 columns: the table in full, the cache rows after it',
   const { box, rows } = await cardIn(await band($, 115))
   expect(box?.props).toMatchObject({ width: 71, height: 11 })
   expect(rows.map(row => row.trimEnd())).toEqual([
-    ' Context   124k / 200k   62%',
+    ' ' + 'Context   124k / 200k   62%'.padEnd(62) + 'Close',
     ' ' + '━'.repeat(42) + '─'.repeat(25),
     '                Input   Cache read   Cache write   Uncached   Output',
     ' Last request   2.2M    2M           154.9k        29.8k      85.6k',
@@ -1988,4 +2088,117 @@ test('after /clear the estimate comes at once, not at the next check', async ($,
   // No 2 s tick has run: the footer already shows the new estimate.
   const ui = await footer($)
   expect((await row(ui)).join('')).toMatch(/~/)
+})
+
+/** The band at `maxRows`, with the card opened, as `band` draws it but with a requestId to scroll. */
+const shortBand = async ($: Engine, maxRows: number) => {
+  await openCard($)
+  return $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows, bodyColumns: 115, scroll: { offset: 0, bodyRows: maxRows - 1 }, view: {} },
+    viewport: { columns: 120, rows: 30 },
+  })
+}
+
+test('a card taller than the band keeps its border and first row; the rows under it scroll in the frame, counted in its last row', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await measure($, 62)
+  await feedAgents($, w)
+  await runCommand($)
+  const whole = await cardIn(await band($, 115))
+  const total = whole.rows.length
+  const ui = await shortBand($, 8)
+  const first = await cardIn(ui)
+  // As tall as the band, never taller: the band itself never scrolls the frame.
+  expect(first.box?.props).toMatchObject({ height: 8 })
+  expect(first.rows).toHaveLength(6)
+  expect(first.rows[0]!.trim()).toMatch(/^Context .* Close$/)
+  // Fewer losses, agents and blank rows first; what is left over is counted, below the window.
+  const below = Number(/↓ (\d+) more/.exec(first.rows.at(-1)!)?.[1])
+  expect(below).toBeGreaterThan(0)
+  expect(first.rows.at(-1)).not.toContain('↑')
+  // The count row's presses move the frame's window, not the band's: the first row stays.
+  await ui.press({ key: 'scroll:down' })
+  const scrolled = await cardIn(ui)
+  expect(scrolled.rows[0]).toEqual(first.rows[0])
+  expect(scrolled.box?.props).toMatchObject({ height: 8 })
+  expect(scrolled.rows.at(-1)).toMatch(/↑ 4 more/)
+  // The wheel over the band reaches the same window (seen in a real terminal); the kit's own
+  // $.ui.scroll cannot raise it on a band whose tree fits it.
+  // The count row's presses move it a window at a time, back to the top.
+  for (let i = 0; i < total && (await cardIn(ui)).rows.at(-1)!.includes('↓'); i++) await ui.press({ key: 'scroll:down' })
+  expect((await cardIn(ui)).rows.at(-1)).not.toContain('↓')
+  for (let i = 0; i < total && (await cardIn(ui)).rows.at(-1)!.includes('↑'); i++) await ui.press({ key: 'scroll:up' })
+  expect((await cardIn(ui)).rows).toEqual(first.rows)
+})
+
+test('an agent row stays pressable while the card is open, and the frame keeps to a band that shrinks or grows', async ($, on) => {
+  const w = world(on, fill(62))
+  twoAgents(w)
+  await startSession($)
+  await measure($, 62)
+  await feedAgents($, w)
+  await runCommand($)
+  const ui = await band($, 115)
+  const tall = (await cardIn(ui)).box?.props?.height as number
+  await ui.redraw({ hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 9, bodyColumns: 115, scroll: { offset: 0, bodyRows: 8 }, view: {} })
+  expect((await cardIn(ui)).box?.props).toMatchObject({ height: 9 })
+  await ui.redraw({ hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 30, bodyColumns: 115, scroll: { offset: 0, bodyRows: 30 }, view: {} })
+  expect((await cardIn(ui)).box?.props).toMatchObject({ height: tall })
+  await ui.press({ key: 'agent:a1' })
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/^Main › Count files/)
+  expect((await cardIn(ui)).rows[0]!.trim()).toMatch(/Close$/)
+})
+
+test('a card a survey hid closes at the next tick, so it does not come back by itself', async ($, on) => {
+  const w = world(on, fill(62))
+  await startSession($)
+  await measure($, 62)
+  expect(placedIn(await (await band($, 115, true)).drawn())).toBeUndefined()
+  await w.clock.advance(2000)
+  expect(placedIn(await (await band($, 115, false, false)).drawn())).toBeUndefined()
+})
+
+test('in fullscreen, over a transcript taller than its viewport, the card lies over the transcript from a row placed at its end; a turn moves it to the band', async ($, on) => {
+  const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  const placed: string[] = []
+  on('ui.place', ($, e) => (placed.push(e.id), { value: { isPlaced: true, requestId: `row-${e.id}` } }) as never)
+  on('classic.UserPromptSubmit', () => ({}))
+  await startSession($)
+  await measure($, 62)
+  const meter = () => $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'SessionMode', props: { modes: [] },
+    viewport: { columns: 120, rows: 34, isFullscreen: true },
+  })
+  // A transcript that fits its viewport: the band takes the card, in the blank rows under it.
+  await $.ui.mount({ plugin: 'context-meter', surface: 'terminal', component: 'InfoNotice', props: { text: 'hi', command: null, onScreen: { first: 0, last: 1, of: 2 } } })
+  await (await meter()).press({ key: 'context-meter:toggle' })
+  expect(placed).toEqual([])
+  expect(placedIn(await (await band($, 115, false, false)).drawn())).toBeDefined()
+  await (await meter()).press({ key: 'context-meter:toggle' })
+  // A row scrolled out of the viewport: the card is drawn over the transcript.
+  await $.ui.mount({ plugin: 'context-meter', surface: 'terminal', component: 'InfoNotice', props: { text: 'old', command: null, onScreen: null } })
+  await (await meter()).press({ key: 'context-meter:toggle' })
+  expect(placed).toHaveLength(1)
+  expect(placedIn(await (await band($, 115, false, false)).drawn())).toBeUndefined()
+  const row = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'Placed', requestId: `row-${placed[0]}`,
+    props: { id: placed[0]!, plugin: 'context-meter' }, viewport: { columns: 120, rows: 34, isFullscreen: true },
+  })
+  const drawn = (await row.drawn()) as Node
+  // One row in the flow; the card leaves it upward, so the chat does not move.
+  expect(drawn.props).toMatchObject({ height: 1 })
+  const card = drawn.children?.[0] as Node
+  expect(card.props).toMatchObject({ position: 'absolute', bottom: 0 })
+  expect(JSON.stringify(card)).toContain('   124k / 200k')
+  // Close on the card closes it.
+  await row.press({ key: 'close' })
+  expect(((await row.drawn()) as Node | null)?.props?.height).toBeUndefined()
+  // Opened again, then a turn starts: the card moves to the band, under the new rows.
+  await (await meter()).press({ key: 'context-meter:toggle' })
+  expect(placed).toHaveLength(2)
+  await $.classic.UserPromptSubmit({ prompt: 'next' } as never)
+  expect(placedIn(await (await band($, 115, false, false)).drawn())).toBeDefined()
 })

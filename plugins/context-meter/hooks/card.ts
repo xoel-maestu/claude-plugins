@@ -84,6 +84,10 @@ type Words = {
   overall: { main: string; agent: string }
   models: string
   mainCrumb: string
+  /** The press at the end of the card's first row that closes it. */
+  close: string
+  /** The rows above or below the frame's window, as its last row counts them: `↓ 6 more`. */
+  more: string
 }
 
 const WORDS: Record<Language, Words> = {
@@ -125,6 +129,8 @@ const WORDS: Record<Language, Words> = {
     overall: { main: 'Main + subagents', agent: 'This agent + subagents' },
     models: 'Models',
     mainCrumb: 'Main',
+    close: 'Close',
+    more: 'more',
   },
   es: {
     context: 'Contexto',
@@ -164,6 +170,8 @@ const WORDS: Record<Language, Words> = {
     overall: { main: 'Principal + subagentes', agent: 'Este agente + subagentes' },
     models: 'Modelos',
     mainCrumb: 'Principal',
+    close: 'Cerrar',
+    more: 'más',
   },
 }
 
@@ -567,7 +575,7 @@ function costRow (usd: number, isSubscription: boolean, words: Words, labelWidth
  * shows the amount alone. The cache rows come last, at most `maxLosses` losses, cut at the border
  * where the band is short. Null with no fill.
  */
-export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES, maxAgents = CARD_AGENTS): Card | null {
+export function cardOf (view: CardView, language: Language, width = Infinity, maxLosses = CARD_LOSSES, maxAgents = CARD_AGENTS, hasGaps = true): Card | null {
   const { agents, selected, now = 0 } = view
   if (view.fill === null) return null
   // An agent shown: its own rows where the main thread's go, its context over its model's window,
@@ -707,11 +715,76 @@ export function cardOf (view: CardView, language: Language, width = Infinity, ma
   if (savedRow !== undefined) rows.push(shorten(savedRow, content))
   // The status row on its own; the losses under it together, so their columns stay aligned.
   rows.push(...extra.slice(0, 1).map(row => shorten(row, content)), ...shortenTogether(extra.slice(1), content))
-  if (agentSection.length > 0) rows.push([], ...agentSection)
-  if (modelSection.length > 0) rows.push([], ...modelSection)
+  const gap: Row[] = hasGaps ? [[]] : []
+  if (agentSection.length > 0) rows.push(...gap, ...agentSection)
+  if (modelSection.length > 0) rows.push(...gap, ...modelSection)
 
   const fitted = rows.map(row => fitRow(row, content))
   return { width: content + FRAME, content, height: fitted.length + 2, rows: fitted, depth: selected?.path.length ?? 0 }
+}
+
+/**
+ * The card as the band draws it, at most `maxRows` rows tall where it can be: the losses, then the
+ * agents listed, go one at a time (down to one of each), then the blank rows between the sections.
+ * What still does not fit scrolls in the band; `/context-meter` prints everything. The first row
+ * ends in a Close press (`close`) where it has room for it.
+ */
+export function cardFor (view: CardView, language: Language, width: number, maxRows: number): Card | null {
+  let losses = CARD_LOSSES
+  let agents = CARD_AGENTS
+  let hasGaps = true
+  let card = cardOf(view, language, width, losses, agents, hasGaps)
+  // Each step drops something until there is nothing left to drop, so the loop always ends.
+  losses = Math.min(losses, Math.max(1, view.cache?.losses.length ?? 1))
+  while (card !== null && card.height > maxRows && (losses > 1 || agents > 1 || hasGaps)) {
+    if (losses > 1) losses -= 1
+    else if (agents > 1) agents -= 1
+    else hasGaps = false
+    card = cardOf(view, language, width, losses, agents, hasGaps)
+  }
+  if (card === null) return null
+  const [first, ...rest] = card.rows
+  return { ...card, rows: [withClose(first!, card.content, WORDS[language].close), ...rest] }
+}
+
+/**
+ * The card as its frame shows it at most `maxRows` tall. A card that fits shows whole. A taller one
+ * keeps its border and its first row (the figures or the path, with Close) fixed; the rows under it
+ * show in a window from `offset`, and the frame's last row counts what is above and below the window
+ * (`↑ 2 more   ↓ 6 more`), each a press that moves it a window's height. The window holds one row at
+ * least, so the frame is never shorter than 5 rows.
+ */
+export type CardWindow = { header: Row; body: Row[]; more: Row | undefined; offset: number; height: number; slots: number; total: number }
+
+export function cardWindowOf (card: Card, maxRows: number, offset: number, language: Language): CardWindow {
+  const [header = [], ...rest] = card.rows
+  if (card.height <= maxRows) return { header, body: rest, more: undefined, offset: 0, height: card.height, slots: rest.length, total: rest.length }
+  // The two borders, the first row and the count row: the rest is the window.
+  const slots = Math.max(1, maxRows - 4)
+  const start = Math.max(0, Math.min(offset, rest.length - slots))
+  const above = start
+  const below = rest.length - start - slots
+  const words = WORDS[language]
+  const cells: Row = []
+  if (above > 0) cells.push({ text: `↑ ${above} ${words.more}`, tone: 'dim', press: 'scroll:up' })
+  if (above > 0 && below > 0) cells.push({ text: GAP, tone: 'plain' })
+  if (below > 0) cells.push({ text: `↓ ${below} ${words.more}`, tone: 'dim', press: 'scroll:down' })
+  return { header, body: rest.slice(start, start + slots), more: fitRow(cells, card.content), offset: start, height: slots + 4, slots, total: rest.length }
+}
+
+/** The first row with the Close press at its right end, where its text leaves room for it and a gap. */
+function withClose (row: Row, content: number, label: string): Row {
+  const used = row.map(cell => cell.text).join('').trimEnd().length
+  if (used + 2 + label.length > content) return row
+  const cells: Row = []
+  let left = used
+  for (const cell of row) {
+    if (left <= 0) break
+    const text = cell.text.slice(0, left)
+    cells.push({ ...cell, text })
+    left -= text.length
+  }
+  return [...cells, { text: ' '.repeat(content - used - label.length), tone: 'plain' }, { text: label, tone: 'dim', press: 'close' }]
 }
 
 /** The card's rows as plain text, for /context-meter: at its widest, every loss of the history. */

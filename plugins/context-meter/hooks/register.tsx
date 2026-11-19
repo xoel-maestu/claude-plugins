@@ -5,8 +5,8 @@ import type { ContextMeterFill, ContextMeterTtl } from '../types'
 
 import { EMPTY as NO_CACHE, HOUR, alertOf, cleared, markCompact, observe, observeTtl, readSubscription, seed, since as cacheSince, ttlInfo } from './cache'
 import type { Alert, Cache, TtlSetting } from './cache'
-import { cacheStatus, cardOf, cardText } from './card'
-import type { CardView, Language, Tone } from './card'
+import { cacheStatus, cardFor, cardText, cardWindowOf } from './card'
+import type { Card, CardView, CardWindow, Language, Tone } from './card'
 import { SUB_LEAST, barOf, fit, label, tidy } from './fit'
 import type { Hides } from './fit'
 import { EMPTY as NO_AGENTS, add as addAgent, childrenOf, pathOf, seeTtl, since as agentsSince } from './agents'
@@ -27,6 +27,8 @@ const agents = atom({ plugin: 'context-meter', key: 'agents' } as const, NO_AGEN
 const drawnAt = atom({ plugin: 'context-meter', key: 'now' } as const, 0)
 // The main thread's cache as the footer warns of it: written by the tick only when it changes.
 const alert = atom({ plugin: 'context-meter', key: 'alert' } as const, null as Alert | null)
+// Whether the card is open: a press on the meter opens and closes it, Close on the card closes it.
+const open = atom({ plugin: 'context-meter', key: 'open' } as const, false)
 
 const SYNC_MS = 2000
 // `$.store` keys: the TTL last observed and the last subscription reading, for the next session.
@@ -38,14 +40,15 @@ const SEPARATOR = ' · '
 // The terminal footer's row: 2 columns of padding at each end, 2 between the hint and what is drawn
 // at the right, and the permission mode label at the left (`⏵⏵ accept edits on ·`, 20 columns).
 const FOOTER = 4 + 2 + 20
-// The hover group the meter (in SessionMode) and its card (in AbovePrompt) share: a pointer on
-// either lights both, so the card shows while the meter or the card itself is under it.
-const SCOPE = 'context-meter'
 // sub-meter's meter Box in the footer; beside it this meter stays first (see the SessionMode hook).
 const SUB_KEY = 'sub-meter'
 // The card's border and bar by depth in the agent tree: the main thread in the theme's own accent,
 // a subagent and a subagent's subagent in two others, deeper ones as the last.
 const DEPTH_COLORS = ['claude', 'ide', 'merged', 'planMode'] as const
+// The overlay card's right edge, in columns from the transcript's, and its most rows: the terminal's
+// less the prompt's three, the footer's, the band's spare row and a margin of three.
+const OVERLAY_RIGHT = 2
+const OVERLAY_ROWS = (rows: number) => Math.max(5, rows - 8)
 
 // Transient, rebuilt by every load: the timer, one count at a time, the window the autocompact
 // point was read for and whether it is to be read again, the stretch (bumped by every figure,
@@ -281,6 +284,32 @@ const seenAgents = new Map<string, AgentInfo>()
 const agentTranscriptSizes = new Map<string, number>()
 /** The agent the card shows, picked with a click on its row; undefined: the main thread. */
 let selectedId: string | undefined
+/**
+ * Where the open card is drawn. `overlay`: over the transcript's last rows, from a row placed at its
+ * end (`$.ui.place`, id `cardRow`) whose card leaves the flow upward, so the chat does not move (one
+ * row, the card's bottom border, is the row's own). Claude Code clips such a card to the region of its
+ * site: the band clips it to the band, the transcript's viewport to the viewport, so the transcript is
+ * the one site where it can lie over the chat. `band`: in the band above the prompt, in the flow, so
+ * the transcript gives it rows. The overlay is taken where it shows whole: in fullscreen (on the main
+ * screen a row clips its card to itself), with no turn running (rows written after the placed one
+ * would be drawn over the card) and with a transcript taller than its viewport (a shorter one sits at
+ * the viewport's top, the rows above its end too few for the card, and the band then takes the blank
+ * rows under it). A turn that starts moves an open overlay to the band.
+ */
+let cardMode: 'band' | 'overlay' = 'band'
+let cardRow: string | undefined
+/** The first row under the card's fixed first row that its frame shows, when the card is taller than its frame. */
+let bodyOffset = 0
+/** As the footer and the band last read them: whether the terminal is fullscreen and a turn is running. */
+let isFullscreen = false
+let isWorking = false
+/** Transcript rows that are partly or wholly out of the viewport, by component and requestId: none, the transcript fits. */
+const offScreen = new Set<string>()
+/** Every row that reported where it lies, and the rows of the transcripts a /clear left behind. */
+const seenRows = new Set<string>()
+const clearedRows = new Set<string>()
+/** Set while drawing an open band card that a survey hid: the next tick closes it, so it does not come back by itself. */
+let isCloseDue = false
 
 /** Queued after the recordings before it, so a compaction or a /clear lands between the right requests. */
 const enqueue = (work: () => Promise<unknown>) => { recording = recording.then(work).then(() => {}, () => {}) }
@@ -473,12 +502,83 @@ function startTimer ($: EngineInterface) {
     await recording
     await sync($, usage.context, true)
     await tick($)
+    // An open card the band could not show (a survey over it, no figure) closes, so it does not
+    // come back by itself once the band is free again.
+    if (isCloseDue) {
+      isCloseDue = false
+      if (await read($, open)) await closeCard($)
+    }
   })
 }
 
 function stopTimers () {
   timer?.cancel()
   timer = undefined
+}
+
+/**
+ * A press on the meter: closes an open card, or opens it, over the transcript where it shows whole
+ * there (see `cardMode`), else in the band.
+ */
+async function toggleCard ($: EngineInterface) {
+  bodyOffset = 0
+  if (await read($, open)) {
+    await closeCard($)
+    return
+  }
+  cardMode = 'band'
+  cardRow = undefined
+  if (isFullscreen && !isWorking && offScreen.size > 0) {
+    const id = `card-${await $.clock.now()}`
+    const placed = await $.ui.place({ id }).catch(() => undefined)
+    if (placed?.isPlaced === true) {
+      cardMode = 'overlay'
+      cardRow = id
+    }
+  }
+  await update($, open, () => true)
+}
+
+async function closeCard ($: EngineInterface) {
+  selectedId = undefined
+  bodyOffset = 0
+  cardRow = undefined
+  cardMode = 'band'
+  await update($, open, () => false)
+}
+
+/** The transcript grows (a turn starts or answers): an open overlay moves to the band, under the new rows. */
+function leaveOverlay ($: EngineInterface) {
+  if (cardMode !== 'overlay') return
+  cardMode = 'band'
+  cardRow = undefined
+  bodyOffset = 0
+  $.ui.invalidate('ui.render')
+}
+
+// The open card's presses: Close, a step of the path or an agent's row, the window's counts.
+// While an agent's transcript is in view the card follows the view, so a press moves the view;
+// otherwise it picks what the card shows.
+function pressOf ($: EngineInterface, viewed: string | undefined, win: CardWindow) {
+  return (target: string) => () => {
+    if (target === 'close') {
+      void closeCard($)
+      return
+    }
+    if (target === 'scroll:up' || target === 'scroll:down') {
+      bodyOffset = Math.max(0, win.offset + (target === 'scroll:up' ? -win.slots : win.slots))
+      $.ui.invalidate('ui.render')
+      return
+    }
+    const id = target === 'main' ? undefined : target.slice('agent:'.length)
+    bodyOffset = 0
+    if (viewed !== undefined) {
+      void $.ui.view(id === undefined ? {} : { agentId: id }).catch(() => undefined)
+      return
+    }
+    selectedId = id
+    $.ui.invalidate('ui.render')
+  }
 }
 
 export const register: Register = (on, options) => {
@@ -515,6 +615,15 @@ export const register: Register = (on, options) => {
   selectedId = undefined
   transcriptSize = -1
   isTranscriptDue = false
+  cardMode = 'band'
+  cardRow = undefined
+  bodyOffset = 0
+  isFullscreen = false
+  isWorking = false
+  offScreen.clear()
+  seenRows.clear()
+  clearedRows.clear()
+  isCloseDue = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -538,6 +647,14 @@ export const register: Register = (on, options) => {
       stretch += 1
       isCompactAtStale = true
       await update($, fill, () => null)
+      // Nothing to show after a /clear: the card closes, rather than opening again by itself later.
+      await closeCard($)
+      // The rows before /clear leave the transcript; they still report once as it changes (seen in
+      // a real session, Claude Code 2.1.329), then never again. Left counted, the new transcript,
+      // short, would open the card over itself: their reports are ignored from here on.
+      for (const key of seenRows) clearedRows.add(key)
+      seenRows.clear()
+      offScreen.clear()
       // Tools run before /clear belong to no request of the session after it.
       toolTimes.clear()
       enqueue(async () => {
@@ -587,6 +704,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.step', async function* ($, e, next) {
+    leaveOverlay($)
     const sentAt = await $.clock.now()
     // The tools this loop ran since its last request, and the session's file, as they are now:
     // the recording may run later, after more tools or a /clear.
@@ -609,6 +727,7 @@ export const register: Register = (on, options) => {
   })
   on('classic.UserPromptSubmit', async ($, e, next) => {
     seeTranscript(e)
+    leaveOverlay($)
     // A new message: an agent picked on the card goes back to the main thread's card.
     if (selectedId !== undefined) {
       selectedId = undefined
@@ -618,6 +737,7 @@ export const register: Register = (on, options) => {
   })
   // A subagent's end: its transcript holds its last response, so its TTL is read once more.
   on('classic.SubagentStop', async ($, e, next) => {
+    leaveOverlay($)
     const agentId = e.agent_id
     const path = e.agent_transcript_path
     if (typeof agentId === 'string' && typeof path === 'string' && path !== '') {
@@ -651,6 +771,13 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (result.deny === undefined) isCompactAtStale = true
     return result
+  })
+
+  // Any slash command writes its echo and output after the placed row, with no turn: an open
+  // overlay moves to the band, under them.
+  on('command.run', async ($, e, next) => {
+    leaveOverlay($)
+    return next(e)
   })
 
   on('command.run', { command: 'context-meter' }, async ($, e) => {
@@ -700,12 +827,14 @@ export const register: Register = (on, options) => {
   // without sub-meter's meter, and the bar needs room for sub-meter's least form too, so the row is
   // the same whichever wraps the other.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const [shown, beneath, sub, now, warned] = await Promise.all([
+    const [shown, beneath, sub, now, warned, isOpen] = await Promise.all([
       read($, fill), next(e),
       $.state.get({ plugin: 'sub-meter', key: 'reading' } as never).catch(() => undefined),
       $.clock.now(),
       read($, alert),
+      read($, open),
     ])
+    isFullscreen = e.viewport?.isFullscreen === true
     if (shown === null) return beneath
 
     const text = label(shown.percent, shown.isEstimate)
@@ -718,14 +847,18 @@ export const register: Register = (on, options) => {
     const form = fit(room, text, isSubOn ? SEPARATOR.length + SUB_LEAST : 0)
     if (form === null) return beneath
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const hasBeneath = e.props.modes.length > 0 || !isBlank(beneath)
     const color = colorFor(shown.percent)
     const bar = barOf(shown.percent, text)
 
+    // The meter is one press that opens and closes the card (the pointer inverts it). The card is
+    // not revealed on hover: in the band it takes rows from the transcript, which a pointer passing
+    // over the meter would move each time, and it hid again as the pointer crossed the prompt to reach it.
     return (
       <Box flexDirection="row">
-        <Box key="context-meter" flexDirection="row" hover={{ scope: SCOPE }}>
+        <Box key="context-meter" flexDirection="row">
+          <Button key="context-meter:toggle" label={isOpen ? 'Close context card' : 'Open context card'} plain onPress={() => { void toggleCard($) }}>
           {form === 'bare' ? null
             // The prefix warns of the main thread's cache expiry: the warning color in its last stretch, the error color once gone.
             : isAlertOn && warned === 'expiring' ? <Text color="warning">ctx </Text>
@@ -734,6 +867,7 @@ export const register: Register = (on, options) => {
           {form === 'bar' ? <Text color={color ?? 'claude'}>{'━'.repeat(bar.filled)}</Text> : null}
           {form === 'bar' ? <Text dimColor>{'─'.repeat(bar.empty) + ' '}</Text> : null}
           <Text color={color}>{text}</Text>
+          </Button>
         </Box>
         {hasBeneath ? <Text dimColor>{SEPARATOR}</Text> : null}
         {beneath}
@@ -741,64 +875,107 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The hover card, in the band above the prompt: placed out of the flow at the band's bottom right,
-  // so its bottom border sits on the row above the prompt's top border and it moves nothing of what
-  // the band holds. Hidden until the meter's group is hovered. With nothing to show, the band is
-  // left as it was, so it gets no row of its own.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    // The agent whose transcript is in view, else the one picked on the card, else the main thread.
-    const [view, beneath] = await Promise.all([viewOf($, undefined, e.props.view?.agentId ?? selectedId), next(e)])
-    const shown = view.fill
-    if (shown === null || e.props.hasSurvey) return beneath
-    const card = cardOf(view, language, e.props.bodyColumns)
-    if (card === null) return beneath
-
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const color = colorFor(shown.percent)
-    // While an agent's transcript is in view the card follows the view, so a press moves the view;
-    // otherwise it picks what the card shows.
-    const viewed = e.props.view?.agentId
-    const press = (target: string) => () => {
-      const id = target === 'main' ? undefined : target.slice('agent:'.length)
-      if (viewed !== undefined) {
-        void $.ui.view(id === undefined ? {} : { agentId: id }).catch(() => undefined)
-        return
-      }
-      selectedId = id
-      $.ui.invalidate('ui.render')
-    }
+  // The card's frame: a rounded border in the color of its depth, the first row fixed, the window
+  // under it, the count row last where the card is taller than the frame. The padding is drawn as
+  // spaces in each row.
+  const frameOf = (
+    { Box, Text, Button }: { Box: any; Text: any; Button: any },
+    card: Card, win: CardWindow, percent: number, press: (target: string) => () => void,
+  ) => {
+    const color = colorFor(percent)
     const depthColor = DEPTH_COLORS[Math.min(card.depth, DEPTH_COLORS.length - 1)]
     const toneProps = (tone: Tone) =>
       tone === 'meter' ? { color } : tone === 'bar' ? { color: color ?? depthColor } : tone === 'dim' ? { dimColor: true } : {}
+    const rows = [win.header, ...win.body, ...(win.more === undefined ? [] : [win.more])]
+    return (
+      <Box width={card.width} height={win.height} flexDirection="column" borderStyle="round" borderColor={depthColor}>
+        {rows.map(cells => (
+          <Box flexDirection="row">
+            <Text> </Text>
+            {cells.map(cell => cell.press === undefined
+              ? <Text {...toneProps(cell.tone)}>{cell.text}</Text>
+              : <Button key={cell.press} plain onPress={press(cell.press)}>{cell.text}</Button>)}
+            <Text> </Text>
+          </Box>
+        ))}
+      </Box>
+    )
+  }
+
+  // The card in the band above the prompt, at its right end, while it is open in the band (a press
+  // on the meter). Closed, or with nothing to show, the band is left as it was, so it gets no row of
+  // its own. In the flow: a Box placed out of the band's flow is clipped by the band (Claude Code's
+  // BoxProps.position), so the card takes its rows from the transcript's. At most `maxRows` tall, so
+  // the band never scrolls it: its border and first row stay, and the count row's presses move its
+  // window. The wheel cannot: Claude Code raises no `ui.scroll` over a band whose tree fits it (seen
+  // in a real session, 2.1.329), and a taller tree is scrolled whole, border and first row with it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    isWorking = e.props.isWorking
+    // The agent whose transcript is in view, else the one picked on the card, else the main thread.
+    const viewed = e.props.view?.agentId
+    const [view, beneath, isOpen] = await Promise.all([viewOf($, undefined, viewed ?? selectedId), next(e), read($, open)])
+    // An overlay is drawn over the main transcript: with an agent's in view, the band shows the card.
+    if (!isOpen || (cardMode === 'overlay' && viewed === undefined)) return beneath
+    const shown = view.fill
+    // A card a survey hides is closed at the next tick, so it does not come back by itself later.
+    if (shown === null || e.props.hasSurvey) {
+      isCloseDue = true
+      return beneath
+    }
+    // As tall as the band shows whole where it can, so the agents stay on screen.
+    const card = cardFor(view, language, e.props.bodyColumns, e.props.maxRows)
+    if (card === null) return beneath
+    const win = cardWindowOf(card, e.props.maxRows, bodyOffset, language)
 
     // The card sits in the flow, after what the band holds, in a holder as wide as the band that
-    // pushes it to the right end. The holder is hidden (no row) until the hover group lights: a
-    // card floated out of the flow is clipped by the band on the terminal (seen in a real session),
-    // so the card takes its rows while shown. An engine node may not sit under a Box that sets a
-    // width, so the holder is apart from it. The padding is drawn as spaces in each row.
+    // pushes it to the right end. An engine node may not sit under a Box that sets a width, so the
+    // holder is apart from it.
+    const { Box, Text, Button } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
         {beneath}
-        <Box
-          width={e.props.bodyColumns} justifyContent="flex-end"
-          display="none" hover={{ scope: SCOPE, display: 'flex' }}
-        >
-          <Box
-            width={card.width} height={card.height}
-            flexDirection="column" borderStyle="round" borderColor={depthColor}
-          >
-            {card.rows.map(cells => (
-              <Box flexDirection="row">
-                <Text> </Text>
-                {cells.map(cell => cell.press === undefined
-                  ? <Text {...toneProps(cell.tone)}>{cell.text}</Text>
-                  : <Button key={cell.press} plain onPress={press(cell.press)}>{cell.text}</Button>)}
-                <Text> </Text>
-              </Box>
-            ))}
-          </Box>
+        <Box width={e.props.bodyColumns} justifyContent="flex-end">
+          {frameOf({ Box, Text, Button }, card, win, shown.percent, pressOf($, viewed, win))}
         </Box>
       </Box>
     )
   })
+
+  // The card over the transcript (see `cardMode`): the placed row is one row, the card's bottom
+  // border, and the card leaves the flow upward from it, over the rows above. As tall as the
+  // transcript's viewport holds whole: the terminal less the prompt, the footer and a margin.
+  on('ui.render', { component: 'Placed' }, async ($, e, next) => {
+    if (e.props.plugin !== 'context-meter' || e.props.id !== cardRow || cardMode !== 'overlay') return next(e)
+    const [view, isOpen] = await Promise.all([viewOf($, undefined, selectedId), read($, open)])
+    const shown = view.fill
+    if (!isOpen || shown === null) return next(e)
+    const columns = e.viewport?.columns ?? 80
+    const card = cardFor(view, language, columns - OVERLAY_RIGHT, OVERLAY_ROWS(e.viewport?.rows ?? 24))
+    if (card === null) return next(e)
+    const win = cardWindowOf(card, OVERLAY_ROWS(e.viewport?.rows ?? 24), bodyOffset, language)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    return (
+      <Box width={columns} height={1}>
+        <Box position="absolute" bottom={0} right={OVERLAY_RIGHT}>
+          {frameOf({ Box, Text, Button }, card, win, shown.percent, pressOf($, undefined, win))}
+        </Box>
+      </Box>
+    )
+  })
+
+  // Whether the transcript is taller than its viewport: a row partly or wholly out of it says so.
+  const seeRow = (key: string, onScreen: unknown) => {
+    const at = onScreen as { first: number; last: number; of: number } | null | undefined
+    if (at === undefined || clearedRows.has(key)) return
+    seenRows.add(key)
+    if (at === null || at.first > 0 || at.last < at.of - 1) offScreen.add(key)
+    else offScreen.delete(key)
+  }
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => (seeRow(`u:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => (seeRow(`a:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => (seeRow(`t:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => (seeRow(`g:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => (seeRow(`c:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => (seeRow(`d:${e.requestId}`, e.props.onScreen), next(e)))
+  on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => (seeRow(`i:${e.requestId}`, e.props.onScreen), next(e)))
 }

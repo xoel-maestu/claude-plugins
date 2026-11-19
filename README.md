@@ -8,7 +8,7 @@ A real session in a 120-column terminal (Claude Code 2.1.329): one prompt that r
 
 | Plugin | What it shows |
 | --- | --- |
-| [context-meter](plugins/context-meter) | How full the context window is. Hover it for the token breakdown, the prompt cache state and the session cost; `/context-meter` prints the same as text. |
+| [context-meter](plugins/context-meter) | How full the context window is. Click it for the token breakdown, the prompt cache state and the session cost; `/context-meter` prints the same as text. |
 | [sub-meter](plugins/sub-meter) | Subscription usage: the 5-hour and weekly windows with the time to reset. Hover it for reset times and pace; `/sub-meter` prints the same as text. |
 
 The two share the footer row, context first:
@@ -32,7 +32,7 @@ In Claude Code:
 
 Install either one or both. sub-meter replaces the sub-meter of [midudev/better-claude](https://github.com/midudev/better-claude): both use the name `sub-meter` and the command `/sub-meter`, so keep only one of them enabled.
 
-Tested with Claude Code 2.1.316. The hover cards need a terminal with mouse reporting; the slash commands work everywhere.
+Tested with Claude Code 2.1.316. The cards need a terminal with mouse reporting (context-meter's opens on a click, sub-meter's on hover); the slash commands work everywhere.
 
 ## Uninstall
 
