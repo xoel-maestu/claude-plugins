@@ -2,6 +2,10 @@
 
 Two plugins for [Claude Code](https://code.claude.com) that put usage meters in the prompt footer, at the bottom right. They are published as the `xoel-plugins` marketplace.
 
+![A Claude Code session: one prompt and its answer, with the context meter and the subscription meter in the footer, bottom right](docs/media/demo.gif)
+
+A real session in a 120-column terminal. After one turn the context meter moves from ~3% to 5%, and sub-meter alternates between the weekly and the 5-hour window.
+
 | Plugin | What it shows |
 | --- | --- |
 | [context-meter](plugins/context-meter) | How full the context window is. Hover it for the token breakdown, the prompt cache state and the session cost; `/context-meter` prints the same as text. |
