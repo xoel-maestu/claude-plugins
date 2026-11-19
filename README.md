@@ -2,9 +2,9 @@
 
 Two plugins for [Claude Code](https://code.claude.com) that put usage meters in the prompt footer, at the bottom right. They are published as the `xoel-plugins` marketplace.
 
-![A Claude Code session: one prompt that runs a subagent, then the context-meter hover card with tokens, cache and subagents, the sub-meter hover card with both windows, and the footer switching between the 5-hour and weekly window](docs/media/demo.gif)
+![A Claude Code session: a prompt that runs a subagent; a click on the context meter opens its card over the chat with tokens, cache and subagents; a click on the subagent opens its own card; then the sub-meter card and the footer switching between the weekly and the 5-hour window](docs/media/demo.gif)
 
-A real session in a 120-column terminal (Claude Code 2.1.329): one prompt that runs an Explore subagent, then the pointer on each meter. context-meter's card shows the token breakdown, the cache state, the session cost and the subagents; sub-meter's card shows both windows, their reset times and the pace. With the pointer away, sub-meter alternates between the 5-hour and the weekly window.
+A real session in a 120x34 kitty terminal (Claude Code 2.1.329, context-meter 1.1.1), frames read from kitty's screen buffer. A click on the context meter opens its card over the chat: token breakdown, cache state, session cost and subagents. A click on a subagent opens its card, and Close hides it. sub-meter shows its card on hover and, with the pointer away, alternates between the weekly and the 5-hour window.
 
 | Plugin | What it shows |
 | --- | --- |
