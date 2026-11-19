@@ -9,6 +9,7 @@
 - The card keeps to the rows it has where it can, so the Agents section stays on screen: fewer cache losses, then fewer agents (down to one of each), then no blank rows between sections. `/context-meter` prints everything.
 - A card still taller than its room keeps its border and its first row (the figures or the agent's path, with Close) fixed; the rows under it show in a window inside the frame, whose last row counts what is above and below (`↑ 2 more   ↓ 6 more`) and moves the window on a click. Before, the band scrolled the whole card: the bottom border was cut off under an `↓ 6 more` row, and a scroll took the top border and Close away.
 - In fullscreen, with no turn running and a transcript taller than its viewport, the card is drawn over the transcript instead of in the band, so the chat moves by one row rather than by the card's height. A turn that starts moves an open card to the band, under the new rows.
+- A slash command run while the card is drawn over the transcript moves it to the band, under the command's output, so the output is no longer written under the card. After `/clear` the card opens in the band again until the new transcript is taller than its viewport; before, rows of the cleared transcript kept it opening over the short new one, near the top of the screen.
 - The card closes when it cannot be shown (a survey over the band, no figure after `/clear`), so it no longer opens again by itself later.
 
 ## 1.1.0 (2026-11-03)

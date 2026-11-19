@@ -305,6 +305,9 @@ let isFullscreen = false
 let isWorking = false
 /** Transcript rows that are partly or wholly out of the viewport, by component and requestId: none, the transcript fits. */
 const offScreen = new Set<string>()
+/** Every row that reported where it lies, and the rows of the transcripts a /clear left behind. */
+const seenRows = new Set<string>()
+const clearedRows = new Set<string>()
 /** Set while drawing an open band card that a survey hid: the next tick closes it, so it does not come back by itself. */
 let isCloseDue = false
 
@@ -618,6 +621,8 @@ export const register: Register = (on, options) => {
   isFullscreen = false
   isWorking = false
   offScreen.clear()
+  seenRows.clear()
+  clearedRows.clear()
   isCloseDue = false
 
   on('session.start', async ($, e, next) => {
@@ -644,6 +649,12 @@ export const register: Register = (on, options) => {
       await update($, fill, () => null)
       // Nothing to show after a /clear: the card closes, rather than opening again by itself later.
       await closeCard($)
+      // The rows before /clear leave the transcript; they still report once as it changes (seen in
+      // a real session, Claude Code 2.1.329), then never again. Left counted, the new transcript,
+      // short, would open the card over itself: their reports are ignored from here on.
+      for (const key of seenRows) clearedRows.add(key)
+      seenRows.clear()
+      offScreen.clear()
       // Tools run before /clear belong to no request of the session after it.
       toolTimes.clear()
       enqueue(async () => {
@@ -760,6 +771,13 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (result.deny === undefined) isCompactAtStale = true
     return result
+  })
+
+  // Any slash command writes its echo and output after the placed row, with no turn: an open
+  // overlay moves to the band, under them.
+  on('command.run', async ($, e, next) => {
+    leaveOverlay($)
+    return next(e)
   })
 
   on('command.run', { command: 'context-meter' }, async ($, e) => {
@@ -948,7 +966,8 @@ export const register: Register = (on, options) => {
   // Whether the transcript is taller than its viewport: a row partly or wholly out of it says so.
   const seeRow = (key: string, onScreen: unknown) => {
     const at = onScreen as { first: number; last: number; of: number } | null | undefined
-    if (at === undefined) return
+    if (at === undefined || clearedRows.has(key)) return
+    seenRows.add(key)
     if (at === null || at.first > 0 || at.last < at.of - 1) offScreen.add(key)
     else offScreen.delete(key)
   }

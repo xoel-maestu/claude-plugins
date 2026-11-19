@@ -479,6 +479,67 @@ test('the band yields to a survey', async ($, on) => {
   expect(placedIn(await (await band($, 115, true)).drawn())).toBeUndefined()
 })
 
+// The overlay: in fullscreen, no turn running, the transcript past its viewport (a row partly out of it).
+/** Lays out what the overlay needs and returns the ids the card placed, and the placed row mounted by id. */
+async function overlayWorld ($: Engine, on: On) {
+  const placed: string[] = []
+  on('ui.place', ($, e) => {
+    placed.push(e.id)
+    return { value: { isPlaced: true, requestId: `row-${e.id}` } } as never
+  })
+  const w = world(on, fill(62), { percentage: 60, totalTokens: 120_000, threshold: 167_000 })
+  await startSession($)
+  await measure($, 62)
+  const meter = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'SessionMode', props: { modes: [] },
+    viewport: { columns: 120, rows: 34, isFullscreen: true } as never,
+  })
+  const bandUi = await band($, 115, false, false)
+  // A row whose top is scrolled away: the transcript is taller than the viewport.
+  const scrolled = await $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'TurnDuration', requestId: 'd-1',
+    props: { word: 'Brewed', durationMs: 2000, onScreen: { first: 3, last: 4, of: 5 } } as never,
+  })
+  const placedRow = (id: string) => $.ui.mount({
+    plugin: 'context-meter', surface: 'terminal', component: 'Placed', requestId: `row-${id}`,
+    props: { id, plugin: 'context-meter' }, viewport: { columns: 120, rows: 34 },
+  })
+  return { w, placed, meter, bandUi, scrolled, placedRow }
+}
+/** The card the placed row draws out of the flow, if any. */
+const overlayIn = async (ui: { drawn: () => Promise<unknown> }) => {
+  const drawn = (await ui.drawn()) as Node | null
+  const out = drawn?.children?.[0] as Node | undefined
+  return out?.props?.position === 'absolute' ? out : undefined
+}
+
+test('a model request (turn.step) moves an open overlay card to the band, under the new rows', async ($, on) => {
+  const { w, placed, meter, bandUi, placedRow } = await overlayWorld($, on)
+  await meter.press({ key: 'context-meter:toggle' })
+  await respond($, w, null)
+  expect(await overlayIn(await placedRow(placed[0]!))).toBeUndefined()
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
+test('a slash command moves an open overlay card to the band: its output is written after the placed row', async ($, on) => {
+  const { placed, meter, bandUi, placedRow } = await overlayWorld($, on)
+  await meter.press({ key: 'context-meter:toggle' })
+  await $.command.run({ command: 'cost', args: '', origin: { kind: 'composer' } } as never).catch(() => undefined)
+  expect(await overlayIn(await placedRow(placed[0]!))).toBeUndefined()
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
+test('/clear forgets the rows past the viewport: on a short transcript the card opens in the band', async ($, on) => {
+  const { placed, meter, bandUi, scrolled } = await overlayWorld($, on)
+  await $.session.end({ reason: 'clear' } as never)
+  // The old row reports once more as the transcript is replaced, as Claude Code does, then no more.
+  await scrolled.redraw({ word: 'Brewed', durationMs: 2000, onScreen: null } as never)
+  await measure($, 62)
+  await meter.press({ key: 'context-meter:toggle' })
+  expect(placed).toHaveLength(0)
+  expect((await cardIn(bandUi)).rows[0]).toContain('Context')
+})
+
 test('the card leaves out the autocompact row when the breakdown has none, a row shorter', async ($, on) => {
   world(on, fill(62), null)
   await startSession($)
