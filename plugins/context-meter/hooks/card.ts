@@ -86,6 +86,8 @@ type Words = {
   mainCrumb: string
   /** The press at the end of the card's first row that closes it. */
   close: string
+  /** The rows above or below the frame's window, as its last row counts them: `↓ 6 more`. */
+  more: string
 }
 
 const WORDS: Record<Language, Words> = {
@@ -128,6 +130,7 @@ const WORDS: Record<Language, Words> = {
     models: 'Models',
     mainCrumb: 'Main',
     close: 'Close',
+    more: 'more',
   },
   es: {
     context: 'Contexto',
@@ -168,6 +171,7 @@ const WORDS: Record<Language, Words> = {
     models: 'Modelos',
     mainCrumb: 'Principal',
     close: 'Cerrar',
+    more: 'más',
   },
 }
 
@@ -741,6 +745,31 @@ export function cardFor (view: CardView, language: Language, width: number, maxR
   if (card === null) return null
   const [first, ...rest] = card.rows
   return { ...card, rows: [withClose(first!, card.content, WORDS[language].close), ...rest] }
+}
+
+/**
+ * The card as its frame shows it at most `maxRows` tall. A card that fits shows whole. A taller one
+ * keeps its border and its first row (the figures or the path, with Close) fixed; the rows under it
+ * show in a window from `offset`, and the frame's last row counts what is above and below the window
+ * (`↑ 2 more   ↓ 6 more`), each a press that moves it a window's height. The window holds one row at
+ * least, so the frame is never shorter than 5 rows.
+ */
+export type CardWindow = { header: Row; body: Row[]; more: Row | undefined; offset: number; height: number; slots: number; total: number }
+
+export function cardWindowOf (card: Card, maxRows: number, offset: number, language: Language): CardWindow {
+  const [header = [], ...rest] = card.rows
+  if (card.height <= maxRows) return { header, body: rest, more: undefined, offset: 0, height: card.height, slots: rest.length, total: rest.length }
+  // The two borders, the first row and the count row: the rest is the window.
+  const slots = Math.max(1, maxRows - 4)
+  const start = Math.max(0, Math.min(offset, rest.length - slots))
+  const above = start
+  const below = rest.length - start - slots
+  const words = WORDS[language]
+  const cells: Row = []
+  if (above > 0) cells.push({ text: `↑ ${above} ${words.more}`, tone: 'dim', press: 'scroll:up' })
+  if (above > 0 && below > 0) cells.push({ text: GAP, tone: 'plain' })
+  if (below > 0) cells.push({ text: `↓ ${below} ${words.more}`, tone: 'dim', press: 'scroll:down' })
+  return { header, body: rest.slice(start, start + slots), more: fitRow(cells, card.content), offset: start, height: slots + 4, slots, total: rest.length }
 }
 
 /** The first row with the Close press at its right end, where its text leaves room for it and a gap. */
